@@ -1,6 +1,6 @@
 // ╔══════════════════════════════════════════════════════════════════╗
-// ║                     IFVG INDICATOR v1.0                          ║
-// ║                         Phase 1: Core Engine                     ║
+// ║                     IFVG INDICATOR v2.0                          ║
+// ║                     Phase 2: Liquidity & Grading                 ║
 // ║                                                                  ║
 // ║  Created: 2026-01-20                                             ║
 // ║  Based on DodgysDD IFVG Strategy                                 ║
@@ -10,6 +10,14 @@
 // ║  - IFVG Inversion Detection                                      ║
 // ║  - Basic visualization (boxes)                                   ║
 // ║  - Mitigation tracking                                           ║
+// ║                                                                  ║
+// ║  Phase 2 Features:                                               ║
+// ║  - Swing structure liquidity detection (EQH, EQL, ITH, ITL)      ║
+// ║  - Full grading algorithm (A+ to C)                              ║
+// ║  - BE point tracking and validation                              ║
+// ║  - Entry valid/invalid status                                    ║
+// ║  - Stop loss calculation                                         ║
+// ║  - Liquidity sweep detection                                     ║
 // ╚══════════════════════════════════════════════════════════════════╝
 
 //@version=6
@@ -41,7 +49,30 @@ type FVG
     box box_id          // Reference to drawn box
     label label_id      // Reference to label
 
-// Type: Inverted Fair Value Gap (extends FVG with inversion data)
+// Type: SwingPoint - For structure-based liquidity detection
+type SwingPoint
+    float price         // Swing high/low price
+    int bar_idx         // Bar index of swing
+    bool is_high        // true = swing high, false = swing low
+    bool is_internal    // true = internal structure, false = external
+    bool is_valid       // Still valid (not broken)
+
+// Type: Liquidity - All liquidity types (Enhanced for proper EQL/EQH)
+type Liquidity
+    float level         // Price level (average of touches)
+    float original_level // First swing's exact price
+    string liq_type     // "EQH", "EQL", "ITH", "ITL"
+    string quality      // "perfect", "relative" (NEW)
+    int bar_idx         // Bar where first swing formed
+    int last_touch_bar  // Bar of most recent valid touch
+    int touch_count     // Number of valid touches
+    bool is_swept       // true if liquidity has been taken
+    int swept_bar       // Bar index where sweep occurred
+    bool is_valid       // Still valid for new touches (not broken through)
+    line line_id        // Reference to drawn line
+    label label_id      // Reference to label
+
+// Type: Inverted Fair Value Gap (Extended for Phase 2)
 type IFVG
     float top           // Upper boundary (inherited from source FVG)
     float bottom        // Lower boundary (inherited from source FVG)
@@ -49,11 +80,20 @@ type IFVG
     int start_bar       // Original FVG start bar
     int inversion_bar   // Bar where inversion occurred
     float inversion_close  // Close price of inversion candle
-    bool is_bullish     // Direction
+    bool is_bullish     // Direction (INVERTED from original FVG)
     string status       // "inverted", "mitigated"
     string grade        // "A+", "A", "A-", "B+", "B", "B-", "C"
+    bool entry_valid    // true if BE point intact at inversion
+    float be_level      // Break-even level (internal H/L)
+    string be_status    // "intact", "taken"
+    float stop_loss     // Calculated stop loss level
+    Liquidity dol       // Draw on Liquidity (target)
+    bool has_sweep      // Liquidity sweep present
+    bool has_delivery   // Delivery from another FVG
+    string momentum     // "strong_no_chop", "neutral", "weak_or_choppy"
     box box_id          // Reference to drawn box
     label label_id      // Reference to grade label
+    line be_line_id     // Reference to BE line
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 2: INPUT CONFIGURATION
@@ -84,30 +124,74 @@ i_show_ifvg         = input.bool(true, "Show Inverted FVGs (IFVG)", group=GROUP_
                       tooltip="Display FVGs that have been inverted")
 
 // ─────────────────────────────────────────────────────────────────────
+// Liquidity Detection Settings (Phase 2)
+// ─────────────────────────────────────────────────────────────────────
+string GROUP_LIQ = "═══ Liquidity Detection ═══"
+i_swing_lookback    = input.int(5, "Swing Lookback", minval=3, maxval=10, group=GROUP_LIQ,
+                      tooltip="Number of bars to look left/right for swing detection")
+i_show_ith_itl      = input.bool(true, "Show ITH/ITL", group=GROUP_LIQ,
+                      tooltip="Display Internal Highs and Internal Lows")
+i_max_liquidity     = input.int(30, "Max Liquidity Levels", minval=10, maxval=100, group=GROUP_LIQ,
+                      tooltip="Maximum liquidity levels to track")
+
+// ─────────────────────────────────────────────────────────────────────
+// EQH/EQL Detection Settings (Enhanced)
+// ─────────────────────────────────────────────────────────────────────
+string GROUP_EQHL = "═══ EQH/EQL Detection ═══"
+i_show_eqh_eql      = input.bool(true, "Show EQH/EQL", group=GROUP_EQHL,
+                      tooltip="Display Equal Highs and Equal Lows")
+i_perfect_tolerance = input.float(0.02, "Perfect EQL/EQH Tolerance (ATR)",
+                      minval=0.01, maxval=0.05, step=0.01, group=GROUP_EQHL,
+                      tooltip="Swings within this range are 'Perfect' EQL/EQH (★)")
+i_relative_tolerance = input.float(0.10, "Relative EQL/EQH Tolerance (ATR)",
+                       minval=0.05, maxval=0.25, step=0.01, group=GROUP_EQHL,
+                       tooltip="Swings within this range are 'Relative' EQL/EQH (~)")
+i_require_intact    = input.bool(true, "Require Intact Liquidity", group=GROUP_EQHL,
+                      tooltip="Only form EQL/EQH if price hasn't broken through yet")
+i_show_perfect_only = input.bool(false, "Show Perfect EQL/EQH Only", group=GROUP_EQHL,
+                      tooltip="Hide relative EQL/EQH, only show perfect matches")
+i_show_swept_eqhl   = input.bool(false, "Show Mitigated EQL/EQH", group=GROUP_EQHL,
+                      tooltip="Keep displaying EQL/EQH after they're mitigated (swept or broken through)")
+
+// ─────────────────────────────────────────────────────────────────────
+// Grading Settings (Phase 2)
+// ─────────────────────────────────────────────────────────────────────
+string GROUP_GRADE = "═══ Grading Settings ═══"
+i_min_grade_display = input.string("B-", "Min Grade to Display",
+                      options=["A+", "A", "A-", "B+", "B", "B-", "C", "All"], group=GROUP_GRADE,
+                      tooltip="Only show IFVGs with this grade or better")
+i_show_be_level     = input.bool(true, "Show BE Levels", group=GROUP_GRADE,
+                      tooltip="Display Break-Even point lines")
+i_show_grade_label  = input.bool(true, "Show Grade on Label", group=GROUP_GRADE,
+                      tooltip="Include grade in IFVG label")
+
+// ─────────────────────────────────────────────────────────────────────
 // Visual Settings
 // ─────────────────────────────────────────────────────────────────────
 string GROUP_VISUAL = "═══ Visual Settings ═══"
-i_bullish_color     = input.color(color.green, "Bullish Color", group=GROUP_VISUAL)
-i_bearish_color     = input.color(color.red, "Bearish Color", group=GROUP_VISUAL)
+i_bullish_color     = input.color(color.new(#089981, 0), "Bullish Color", group=GROUP_VISUAL)
+i_bearish_color     = input.color(color.new(#F23645, 0), "Bearish Color", group=GROUP_VISUAL)
 i_fvg_opacity       = input.int(85, "FVG Opacity (%)", minval=50, maxval=95, group=GROUP_VISUAL,
                       tooltip="Higher = more transparent. Active FVGs use this opacity")
 i_ifvg_opacity      = input.int(70, "IFVG Opacity (%)", minval=40, maxval=90, group=GROUP_VISUAL,
                       tooltip="Higher = more transparent. Inverted FVGs use this opacity")
 i_show_labels       = input.bool(true, "Show Labels", group=GROUP_VISUAL)
 i_label_size        = input.string("small", "Label Size", options=["tiny", "small", "normal"], group=GROUP_VISUAL)
+i_liq_color         = input.color(color.orange, "Liquidity Color", group=GROUP_VISUAL,
+                      tooltip="Color for liquidity lines (EQH/EQL)")
+i_ithl_color        = input.color(color.yellow, "ITH/ITL Color", group=GROUP_VISUAL,
+                      tooltip="Color for internal high/low lines")
+i_be_color          = input.color(color.white, "BE Level Color", group=GROUP_VISUAL,
+                      tooltip="Color for break-even level line")
 
 // ─────────────────────────────────────────────────────────────────────
 // Border Settings
 // ─────────────────────────────────────────────────────────────────────
 string GROUP_BORDER = "═══ Border Settings ═══"
-i_fvg_border_width  = input.int(1, "FVG Border Width", minval=1, maxval=4, group=GROUP_BORDER,
-                      tooltip="Border thickness for active FVGs")
-i_ifvg_border_width = input.int(2, "IFVG Border Width", minval=1, maxval=4, group=GROUP_BORDER,
-                      tooltip="Border thickness for inverted FVGs")
-i_fvg_border_style  = input.string("Solid", "FVG Border Style", options=["Solid", "Dashed", "Dotted"], group=GROUP_BORDER,
-                      tooltip="Border style for active FVGs")
-i_ifvg_border_style = input.string("Dashed", "IFVG Border Style", options=["Solid", "Dashed", "Dotted"], group=GROUP_BORDER,
-                      tooltip="Border style for inverted FVGs")
+i_fvg_border_width  = input.int(1, "FVG Border Width", minval=1, maxval=4, group=GROUP_BORDER)
+i_ifvg_border_width = input.int(2, "IFVG Border Width", minval=1, maxval=4, group=GROUP_BORDER)
+i_fvg_border_style  = input.string("Solid", "FVG Border Style", options=["Solid", "Dashed", "Dotted"], group=GROUP_BORDER)
+i_ifvg_border_style = input.string("Dashed", "IFVG Border Style", options=["Solid", "Dashed", "Dotted"], group=GROUP_BORDER)
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 3: GLOBAL VARIABLES & DATA STORES
@@ -117,11 +201,12 @@ i_ifvg_border_style = input.string("Dashed", "IFVG Border Style", options=["Soli
 var array<FVG> g_fvg_array = array.new<FVG>()
 var array<IFVG> g_ifvg_array = array.new<IFVG>()
 
-// Tracking variables
-var int g_fvg_count = 0
-var int g_ifvg_count = 0
+// Liquidity Arrays (Phase 2)
+var array<SwingPoint> g_swing_highs = array.new<SwingPoint>()
+var array<SwingPoint> g_swing_lows = array.new<SwingPoint>()
+var array<Liquidity> g_liquidity_array = array.new<Liquidity>()
 
-// ATR for gap sizing
+// ATR for sizing
 atr_value = ta.atr(i_fvg_atr_period)
 
 // ══════════════════════════════════════════════════════════════════════
@@ -162,7 +247,46 @@ get_border_style(string style_str) =>
     result
 
 // ─────────────────────────────────────────────────────────────────────
-// Clean up old drawings when array exceeds limit
+// Grade to numeric value for comparison
+// ─────────────────────────────────────────────────────────────────────
+grade_to_value(string grade) =>
+    int result = 0
+    switch grade
+        "A+" => result := 7
+        "A"  => result := 6
+        "A-" => result := 5
+        "B+" => result := 4
+        "B"  => result := 3
+        "B-" => result := 2
+        "C"  => result := 1
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Check if grade meets minimum threshold
+// ─────────────────────────────────────────────────────────────────────
+grade_meets_minimum(string grade, string min_grade) =>
+    if min_grade == "All"
+        true
+    else
+        grade_to_value(grade) >= grade_to_value(min_grade)
+
+// ─────────────────────────────────────────────────────────────────────
+// Grade to color for visual distinction
+// ─────────────────────────────────────────────────────────────────────
+grade_to_color(string grade) =>
+    color result = color.gray
+    switch grade
+        "A+" => result := color.new(#00FF00, 0)  // Bright green
+        "A"  => result := color.new(#00CC00, 0)  // Green
+        "A-" => result := color.new(#66CC00, 0)  // Yellow-green
+        "B+" => result := color.new(#FFCC00, 0)  // Yellow
+        "B"  => result := color.new(#FF9900, 0)  // Orange
+        "B-" => result := color.new(#FF6600, 0)  // Dark orange
+        "C"  => result := color.new(#FF3333, 0)  // Red
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Clean up arrays when they exceed limits
 // ─────────────────────────────────────────────────────────────────────
 cleanup_fvg_array() =>
     while array.size(g_fvg_array) > i_max_fvgs
@@ -179,6 +303,76 @@ cleanup_ifvg_array() =>
             box.delete(old_ifvg.box_id)
         if not na(old_ifvg.label_id)
             label.delete(old_ifvg.label_id)
+        if not na(old_ifvg.be_line_id)
+            line.delete(old_ifvg.be_line_id)
+
+cleanup_liquidity_array() =>
+    while array.size(g_liquidity_array) > i_max_liquidity
+        old_liq = array.shift(g_liquidity_array)
+        if not na(old_liq.line_id)
+            line.delete(old_liq.line_id)
+        if not na(old_liq.label_id)
+            label.delete(old_liq.label_id)
+
+// ─────────────────────────────────────────────────────────────────────
+// Check if a swing level is still intact (not broken through)
+// For EQL: returns true if price never CLOSED below the swing low
+// For EQH: returns true if price never CLOSED above the swing high
+// ─────────────────────────────────────────────────────────────────────
+is_swing_intact(float swing_price, bool is_low, int swing_bar) =>
+    bool intact = true
+    int bars_to_check = bar_index - swing_bar
+
+    // Limit check to prevent performance issues
+    int max_check = math.min(bars_to_check, 500)
+
+    if max_check > 0
+        for i = 0 to max_check - 1
+            if is_low
+                // For lows: check if price ever CLOSED below
+                if close[i] < swing_price
+                    intact := false
+                    break
+            else
+                // For highs: check if price ever CLOSED above
+                if close[i] > swing_price
+                    intact := false
+                    break
+
+    intact
+
+// ─────────────────────────────────────────────────────────────────────
+// Classify EQL/EQH quality based on price difference
+// ─────────────────────────────────────────────────────────────────────
+get_eqhl_quality(float price_diff, float atr) =>
+    string quality = "none"
+
+    if not na(atr) and atr > 0
+        float perfect_thresh = atr * i_perfect_tolerance
+        float relative_thresh = atr * i_relative_tolerance
+
+        if price_diff <= perfect_thresh
+            quality := "perfect"
+        else if price_diff <= relative_thresh
+            quality := "relative"
+
+    quality
+
+// ─────────────────────────────────────────────────────────────────────
+// Check if new swing forms valid EQL (must be AT or ABOVE previous)
+// ─────────────────────────────────────────────────────────────────────
+is_valid_eql_formation(float swing1_low, float swing2_low, float tolerance) =>
+    // Swing 2 must be >= Swing 1 (within small tolerance for "exactly equal")
+    // This ensures new low is at same level or holding higher (support holding)
+    swing2_low >= swing1_low - tolerance
+
+// ─────────────────────────────────────────────────────────────────────
+// Check if new swing forms valid EQH (must be AT or BELOW previous)
+// ─────────────────────────────────────────────────────────────────────
+is_valid_eqh_formation(float swing1_high, float swing2_high, float tolerance) =>
+    // Swing 2 must be <= Swing 1 (within small tolerance for "exactly equal")
+    // This ensures new high is at same level or failing to break (resistance holding)
+    swing2_high <= swing1_high + tolerance
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 5: FVG DETECTION
@@ -186,28 +380,19 @@ cleanup_ifvg_array() =>
 
 // ─────────────────────────────────────────────────────────────────────
 // Detect Fair Value Gaps
-// FVG forms when there's a gap between candle 1's high/low and candle 3's low/high
-// We check on the THIRD candle (current bar) looking back
 // ─────────────────────────────────────────────────────────────────────
 detect_fvg() =>
     FVG result = na
 
-    // Only detect on confirmed bars to prevent repainting
     if barstate.isconfirmed and not na(atr_value)
-        // Calculate minimum gap size
         min_gap = atr_value * i_fvg_min_size_mult
 
-        // ─────────────────────────────────────────────────────────────
-        // Bullish FVG Detection
-        // Gap between: Candle 1 High (high[2]) and Candle 3 Low (low[0])
-        // Bullish FVG: low[0] > high[2] (current candle's low above 2-bars-ago high)
-        // ─────────────────────────────────────────────────────────────
+        // Bullish FVG: low[0] > high[2]
         bullish_gap_size = low - high[2]
-
         if bullish_gap_size > min_gap
             result := FVG.new(
-                top = low,              // Top of gap = current candle's low
-                bottom = high[2],       // Bottom of gap = 2-bars-ago high
+                top = low,
+                bottom = high[2],
                 mid = (low + high[2]) / 2,
                 start_bar = bar_index - 2,
                 end_bar = bar_index,
@@ -218,17 +403,12 @@ detect_fvg() =>
                 label_id = na
             )
 
-        // ─────────────────────────────────────────────────────────────
-        // Bearish FVG Detection
-        // Gap between: Candle 1 Low (low[2]) and Candle 3 High (high[0])
-        // Bearish FVG: high[0] < low[2] (current candle's high below 2-bars-ago low)
-        // ─────────────────────────────────────────────────────────────
+        // Bearish FVG: high[0] < low[2]
         bearish_gap_size = low[2] - high
-
-        if bearish_gap_size > min_gap and na(result)  // Only one FVG per bar
+        if bearish_gap_size > min_gap and na(result)
             result := FVG.new(
-                top = low[2],           // Top of gap = 2-bars-ago low
-                bottom = high,          // Bottom of gap = current candle's high
+                top = low[2],
+                bottom = high,
                 mid = (low[2] + high) / 2,
                 start_bar = bar_index - 2,
                 end_bar = bar_index,
@@ -242,100 +422,656 @@ detect_fvg() =>
     result
 
 // ══════════════════════════════════════════════════════════════════════
-// SECTION 6: INVERSION DETECTION
+// SECTION 6: SWING POINT & LIQUIDITY DETECTION (Phase 2)
 // ══════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────
-// Check if any active FVG has been inverted
-// Inversion = price returns INTO the FVG zone, then candle BODY closes through it
-//
-// KEY RULES:
-// 1. FVG must exist for at least 1 bar before checking inversion
-// 2. Price must actually enter/penetrate the FVG zone (not just touch)
-// 3. Candle body must close on the opposite side of the zone
+// Detect swing highs and lows
 // ─────────────────────────────────────────────────────────────────────
+detect_swing_points() =>
+    if barstate.isconfirmed
+        lookback = i_swing_lookback
+
+        // Check if we have enough bars
+        if bar_index > lookback * 2
+            // Detect swing high at [lookback] position
+            bool is_swing_high = true
+            float pivot_high = high[lookback]
+
+            for j = 1 to lookback
+                if high[lookback] <= high[lookback - j] or high[lookback] <= high[lookback + j]
+                    is_swing_high := false
+                    break
+
+            if is_swing_high
+                // Create swing high
+                new_swing = SwingPoint.new(
+                    price = pivot_high,
+                    bar_idx = bar_index - lookback,
+                    is_high = true,
+                    is_internal = false,  // Will be determined later
+                    is_valid = true
+                )
+                array.push(g_swing_highs, new_swing)
+
+                // Limit array size
+                if array.size(g_swing_highs) > 50
+                    array.shift(g_swing_highs)
+
+            // Detect swing low at [lookback] position
+            bool is_swing_low = true
+            float pivot_low = low[lookback]
+
+            for j = 1 to lookback
+                if low[lookback] >= low[lookback - j] or low[lookback] >= low[lookback + j]
+                    is_swing_low := false
+                    break
+
+            if is_swing_low
+                // Create swing low
+                new_swing = SwingPoint.new(
+                    price = pivot_low,
+                    bar_idx = bar_index - lookback,
+                    is_high = false,
+                    is_internal = false,
+                    is_valid = true
+                )
+                array.push(g_swing_lows, new_swing)
+
+                // Limit array size
+                if array.size(g_swing_lows) > 50
+                    array.shift(g_swing_lows)
+
+// ─────────────────────────────────────────────────────────────────────
+// Check for Equal Highs (EQH) - REDESIGNED
+// Rules:
+//   1. Both swings must form BEFORE price breaks above either
+//   2. New swing must be AT or BELOW previous swing (resistance holding)
+//   3. Quality: "perfect" if within 0.02 ATR, "relative" if within 0.1 ATR
+// ─────────────────────────────────────────────────────────────────────
+check_equal_highs() =>
+    int swing_size = array.size(g_swing_highs)
+    if swing_size >= 2 and not na(atr_value)
+        float relative_tol = atr_value * i_relative_tolerance
+
+        // Get the most recent swing high
+        recent_high = array.get(g_swing_highs, swing_size - 1)
+
+        // RULE 1: Check if recent swing is still intact (not broken through)
+        bool recent_intact = true
+        if i_require_intact
+            recent_intact := is_swing_intact(recent_high.price, false, recent_high.bar_idx)
+
+        if recent_intact
+            // Check against previous swing highs for EQH
+            int start_idx = swing_size - 2
+            int end_idx = math.max(0, swing_size - 10)
+
+            for i = start_idx to end_idx
+                if i >= 0 and i < swing_size
+                    prev_high = array.get(g_swing_highs, i)
+
+                    // RULE 1: Previous swing must also be intact
+                    bool prev_intact = true
+                    if i_require_intact
+                        prev_intact := is_swing_intact(prev_high.price, false, prev_high.bar_idx)
+
+                    if prev_intact
+                        // RULE 2: New swing must be AT or BELOW previous (resistance holding)
+                        // For EQH: recent_high.price <= prev_high.price + tolerance
+                        if is_valid_eqh_formation(prev_high.price, recent_high.price, relative_tol)
+                            // Calculate price difference
+                            float price_diff = math.abs(recent_high.price - prev_high.price)
+
+                            // RULE 3: Must be within tolerance
+                            if price_diff <= relative_tol
+                                // Determine quality
+                                string quality = get_eqhl_quality(price_diff, atr_value)
+
+                                if quality != "none"
+                                    // Skip if showing perfect only and this is relative
+                                    if i_show_perfect_only and quality == "relative"
+                                        continue
+
+                                    // Check if EQH already exists at this level
+                                    bool exists = false
+                                    int liq_size = array.size(g_liquidity_array)
+                                    if liq_size > 0
+                                        for j = 0 to liq_size - 1
+                                            if j < liq_size
+                                                liq = array.get(g_liquidity_array, j)
+                                                if liq.liq_type == "EQH" and liq.is_valid and not liq.is_swept
+                                                    if math.abs(liq.level - recent_high.price) <= relative_tol
+                                                        // Update existing EQH with new touch
+                                                        liq.touch_count := liq.touch_count + 1
+                                                        liq.last_touch_bar := recent_high.bar_idx
+                                                        // Upgrade quality if better
+                                                        if quality == "perfect" and liq.quality == "relative"
+                                                            liq.quality := "perfect"
+                                                        exists := true
+                                                        break
+
+                                    // Create new EQH if doesn't exist
+                                    if not exists
+                                        // Use the LOWER of the two highs as the level (more conservative)
+                                        float eqh_level = math.min(recent_high.price, prev_high.price)
+
+                                        new_liq = Liquidity.new(
+                                            level = eqh_level,
+                                            original_level = prev_high.price,
+                                            liq_type = "EQH",
+                                            quality = quality,
+                                            bar_idx = prev_high.bar_idx,
+                                            last_touch_bar = recent_high.bar_idx,
+                                            touch_count = 2,
+                                            is_swept = false,
+                                            swept_bar = 0,
+                                            is_valid = true,
+                                            line_id = na,
+                                            label_id = na
+                                        )
+                                        array.push(g_liquidity_array, new_liq)
+                                    break  // Only create one EQH per swing high
+
+// ─────────────────────────────────────────────────────────────────────
+// Check for Equal Lows (EQL) - REDESIGNED
+// Rules:
+//   1. Both swings must form BEFORE price breaks below either
+//   2. New swing must be AT or ABOVE previous swing (support holding)
+//   3. Quality: "perfect" if within 0.02 ATR, "relative" if within 0.1 ATR
+// ─────────────────────────────────────────────────────────────────────
+check_equal_lows() =>
+    int swing_size = array.size(g_swing_lows)
+    if swing_size >= 2 and not na(atr_value)
+        float relative_tol = atr_value * i_relative_tolerance
+
+        // Get the most recent swing low
+        recent_low = array.get(g_swing_lows, swing_size - 1)
+
+        // RULE 1: Check if recent swing is still intact (not broken through)
+        bool recent_intact = true
+        if i_require_intact
+            recent_intact := is_swing_intact(recent_low.price, true, recent_low.bar_idx)
+
+        if recent_intact
+            // Check against previous swing lows for EQL
+            int start_idx = swing_size - 2
+            int end_idx = math.max(0, swing_size - 10)
+
+            for i = start_idx to end_idx
+                if i >= 0 and i < swing_size
+                    prev_low = array.get(g_swing_lows, i)
+
+                    // RULE 1: Previous swing must also be intact
+                    bool prev_intact = true
+                    if i_require_intact
+                        prev_intact := is_swing_intact(prev_low.price, true, prev_low.bar_idx)
+
+                    if prev_intact
+                        // RULE 2: New swing must be AT or ABOVE previous (support holding)
+                        // For EQL: recent_low.price >= prev_low.price - tolerance
+                        if is_valid_eql_formation(prev_low.price, recent_low.price, relative_tol)
+                            // Calculate price difference
+                            float price_diff = math.abs(recent_low.price - prev_low.price)
+
+                            // RULE 3: Must be within tolerance
+                            if price_diff <= relative_tol
+                                // Determine quality
+                                string quality = get_eqhl_quality(price_diff, atr_value)
+
+                                if quality != "none"
+                                    // Skip if showing perfect only and this is relative
+                                    if i_show_perfect_only and quality == "relative"
+                                        continue
+
+                                    // Check if EQL already exists at this level
+                                    bool exists = false
+                                    int liq_size = array.size(g_liquidity_array)
+                                    if liq_size > 0
+                                        for j = 0 to liq_size - 1
+                                            if j < liq_size
+                                                liq = array.get(g_liquidity_array, j)
+                                                if liq.liq_type == "EQL" and liq.is_valid and not liq.is_swept
+                                                    if math.abs(liq.level - recent_low.price) <= relative_tol
+                                                        // Update existing EQL with new touch
+                                                        liq.touch_count := liq.touch_count + 1
+                                                        liq.last_touch_bar := recent_low.bar_idx
+                                                        // Upgrade quality if better
+                                                        if quality == "perfect" and liq.quality == "relative"
+                                                            liq.quality := "perfect"
+                                                        exists := true
+                                                        break
+
+                                    // Create new EQL if doesn't exist
+                                    if not exists
+                                        // Use the HIGHER of the two lows as the level (more conservative)
+                                        float eql_level = math.max(recent_low.price, prev_low.price)
+
+                                        new_liq = Liquidity.new(
+                                            level = eql_level,
+                                            original_level = prev_low.price,
+                                            liq_type = "EQL",
+                                            quality = quality,
+                                            bar_idx = prev_low.bar_idx,
+                                            last_touch_bar = recent_low.bar_idx,
+                                            touch_count = 2,
+                                            is_swept = false,
+                                            swept_bar = 0,
+                                            is_valid = true,
+                                            line_id = na,
+                                            label_id = na
+                                        )
+                                        array.push(g_liquidity_array, new_liq)
+                                    break  // Only create one EQL per swing low
+
+// ─────────────────────────────────────────────────────────────────────
+// Create Internal Highs/Lows (ITH/ITL)
+// These are recent swing points that serve as BE references
+// ─────────────────────────────────────────────────────────────────────
+create_internal_levels() =>
+    // Create ITH from recent swing highs
+    int swing_high_size = array.size(g_swing_highs)
+    if swing_high_size > 0 and i_show_ith_itl
+        recent_high = array.get(g_swing_highs, swing_high_size - 1)
+
+        // Check if ITH already exists
+        bool ith_exists = false
+        int liq_size_1 = array.size(g_liquidity_array)
+        if liq_size_1 > 0
+            for i = 0 to liq_size_1 - 1
+                if i < liq_size_1
+                    liq = array.get(g_liquidity_array, i)
+                    if liq.liq_type == "ITH" and liq.bar_idx == recent_high.bar_idx
+                        ith_exists := true
+                        break
+
+        if not ith_exists
+            new_ith = Liquidity.new(
+                level = recent_high.price,
+                original_level = recent_high.price,
+                liq_type = "ITH",
+                quality = "na",
+                bar_idx = recent_high.bar_idx,
+                last_touch_bar = recent_high.bar_idx,
+                touch_count = 1,
+                is_swept = false,
+                swept_bar = 0,
+                is_valid = true,
+                line_id = na,
+                label_id = na
+            )
+            array.push(g_liquidity_array, new_ith)
+
+    // Create ITL from recent swing lows
+    int swing_low_size = array.size(g_swing_lows)
+    if swing_low_size > 0 and i_show_ith_itl
+        recent_low = array.get(g_swing_lows, swing_low_size - 1)
+
+        bool itl_exists = false
+        int liq_size_2 = array.size(g_liquidity_array)
+        if liq_size_2 > 0
+            for i = 0 to liq_size_2 - 1
+                if i < liq_size_2
+                    liq = array.get(g_liquidity_array, i)
+                    if liq.liq_type == "ITL" and liq.bar_idx == recent_low.bar_idx
+                        itl_exists := true
+                        break
+
+        if not itl_exists
+            new_itl = Liquidity.new(
+                level = recent_low.price,
+                original_level = recent_low.price,
+                liq_type = "ITL",
+                quality = "na",
+                bar_idx = recent_low.bar_idx,
+                last_touch_bar = recent_low.bar_idx,
+                touch_count = 1,
+                is_swept = false,
+                swept_bar = 0,
+                is_valid = true,
+                line_id = na,
+                label_id = na
+            )
+            array.push(g_liquidity_array, new_itl)
+
+// ─────────────────────────────────────────────────────────────────────
+// Check for liquidity sweeps (Enhanced for EQL/EQH)
+// When swept: mark as swept AND invalidate for future touches
+// ─────────────────────────────────────────────────────────────────────
+check_liquidity_sweeps() =>
+    int liq_size = array.size(g_liquidity_array)
+    if barstate.isconfirmed and liq_size > 0
+        for i = 0 to liq_size - 1
+            if i < liq_size
+                liq = array.get(g_liquidity_array, i)
+
+                if not liq.is_swept and liq.is_valid
+                    // BSL Sweep: high wicks above, close stays below
+                    if (liq.liq_type == "EQH" or liq.liq_type == "ITH")
+                        if high > liq.level and close < liq.level
+                            liq.is_swept := true
+                            liq.swept_bar := bar_index
+                            liq.is_valid := false  // No more touches count
+
+                    // SSL Sweep: low wicks below, close stays above
+                    if (liq.liq_type == "EQL" or liq.liq_type == "ITL")
+                        if low < liq.level and close > liq.level
+                            liq.is_swept := true
+                            liq.swept_bar := bar_index
+                            liq.is_valid := false  // No more touches count
+
+                // Also check for complete break (close through) - invalidates without sweep marker
+                if liq.is_valid and not liq.is_swept
+                    if (liq.liq_type == "EQH" or liq.liq_type == "ITH")
+                        if close > liq.level
+                            liq.is_valid := false  // Broken through, no longer valid for EQH
+                    if (liq.liq_type == "EQL" or liq.liq_type == "ITL")
+                        if close < liq.level
+                            liq.is_valid := false  // Broken through, no longer valid for EQL
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 7: BE POINT & GRADING FUNCTIONS (Phase 2)
+// ══════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────
+// Find nearest internal high after a bar index (for bearish IFVG BE)
+// ─────────────────────────────────────────────────────────────────────
+find_next_internal_high(int after_bar) =>
+    float result = na
+    int closest_bar = 999999
+    int arr_size = array.size(g_swing_highs)
+
+    if arr_size > 0
+        for i = 0 to arr_size - 1
+            if i < arr_size
+                swing = array.get(g_swing_highs, i)
+                if swing.bar_idx > after_bar and swing.bar_idx < closest_bar
+                    result := swing.price
+                    closest_bar := swing.bar_idx
+
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Find nearest internal low after a bar index (for bullish IFVG BE)
+// ─────────────────────────────────────────────────────────────────────
+find_next_internal_low(int after_bar) =>
+    float result = na
+    int closest_bar = 999999
+    int arr_size = array.size(g_swing_lows)
+
+    if arr_size > 0
+        for i = 0 to arr_size - 1
+            if i < arr_size
+                swing = array.get(g_swing_lows, i)
+                if swing.bar_idx > after_bar and swing.bar_idx < closest_bar
+                    result := swing.price
+                    closest_bar := swing.bar_idx
+
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Find nearest Draw on Liquidity (target)
+// For bullish IFVG: find BSL (highs above)
+// For bearish IFVG: find SSL (lows below)
+// ─────────────────────────────────────────────────────────────────────
+find_dol(bool is_bullish_ifvg, float current_price) =>
+    Liquidity result = na
+    float best_distance = 999999.0
+    int arr_size = array.size(g_liquidity_array)
+
+    if arr_size > 0
+        for i = 0 to arr_size - 1
+            if i < arr_size
+                liq = array.get(g_liquidity_array, i)
+
+                if not liq.is_swept
+                    if is_bullish_ifvg
+                        // For bullish IFVG, target BSL (highs above current price)
+                        if (liq.liq_type == "EQH" or liq.liq_type == "ITH") and liq.level > current_price
+                            distance = liq.level - current_price
+                            if distance < best_distance
+                                best_distance := distance
+                                result := liq
+                    else
+                        // For bearish IFVG, target SSL (lows below current price)
+                        if (liq.liq_type == "EQL" or liq.liq_type == "ITL") and liq.level < current_price
+                            distance = current_price - liq.level
+                            if distance < best_distance
+                                best_distance := distance
+                                result := liq
+
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Check if there was a recent liquidity sweep
+// ─────────────────────────────────────────────────────────────────────
+check_recent_sweep(bool looking_for_bsl, int lookback_bars) =>
+    bool result = false
+    int arr_size = array.size(g_liquidity_array)
+
+    if arr_size > 0
+        for i = 0 to arr_size - 1
+            if i < arr_size
+                liq = array.get(g_liquidity_array, i)
+
+                if liq.is_swept and bar_index - liq.swept_bar <= lookback_bars
+                    if looking_for_bsl and (liq.liq_type == "EQH" or liq.liq_type == "ITH")
+                        result := true
+                        break
+                    if not looking_for_bsl and (liq.liq_type == "EQL" or liq.liq_type == "ITL")
+                        result := true
+                        break
+
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Assess momentum quality of the inversion candle
+// ─────────────────────────────────────────────────────────────────────
+assess_momentum(float inv_open, float inv_high, float inv_low, float inv_close) =>
+    string result = "neutral"
+
+    candle_body = math.abs(inv_close - inv_open)
+    candle_range = inv_high - inv_low
+
+    if candle_range > 0 and not na(atr_value)
+        body_ratio = candle_body / candle_range
+
+        // Strong momentum: body >70% of range AND range > ATR
+        if body_ratio > 0.7 and candle_range > atr_value
+            result := "strong_no_chop"
+        // Weak/choppy: small body (<30%) or very small range
+        else if body_ratio < 0.3 or candle_range < atr_value * 0.5
+            result := "weak_or_choppy"
+
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Calculate stop loss level
+// ─────────────────────────────────────────────────────────────────────
+calculate_stop_loss(bool is_bullish, float ifvg_bottom, float ifvg_top, float inv_close) =>
+    float result = na
+
+    // Default: Fail Stop - below/above the inversion candle body close
+    if is_bullish
+        // For bullish IFVG, stop below the zone
+        result := ifvg_bottom
+    else
+        // For bearish IFVG, stop above the zone
+        result := ifvg_top
+
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Full grading algorithm
+// ─────────────────────────────────────────────────────────────────────
+calculate_grade(bool has_sweep, bool has_delivery, string momentum, bool has_dol, bool in_optimal_zone, bool in_wrong_zone, bool fvg_singular) =>
+    string result = "C"
+
+    // ═══════════════════════════════════════════════════════════
+    // STEP 1: MANDATORY CRITERIA → DETERMINE TIER
+    // ═══════════════════════════════════════════════════════════
+
+    // Must have clear DOL (target)
+    if not has_dol
+        result := "C"
+    else
+        string tier = "C"
+
+        // Tier based on liquidity context
+        if has_sweep and has_delivery
+            tier := "A"
+        else if has_sweep or has_delivery
+            tier := "A"
+        else
+            tier := "B"
+
+        // ═══════════════════════════════════════════════════════
+        // STEP 2: QUALITY CRITERIA → DETERMINE MODIFIER
+        // ═══════════════════════════════════════════════════════
+
+        int quality_score = 0
+
+        // Momentum (+1 / -1)
+        if momentum == "strong_no_chop"
+            quality_score := quality_score + 1
+        else if momentum == "weak_or_choppy"
+            quality_score := quality_score - 1
+
+        // Premium/Discount (+1 / -1)
+        if in_optimal_zone
+            quality_score := quality_score + 1
+        else if in_wrong_zone
+            quality_score := quality_score - 1
+
+        // FVG Clarity (+1 / -1)
+        if fvg_singular
+            quality_score := quality_score + 1
+        else
+            quality_score := quality_score - 1
+
+        // Bonus: Both sweep AND delivery
+        if has_sweep and has_delivery
+            quality_score := quality_score + 1
+
+        // ═══════════════════════════════════════════════════════
+        // STEP 3: COMBINE TIER + MODIFIER
+        // ═══════════════════════════════════════════════════════
+
+        if tier == "A"
+            if quality_score >= 3
+                result := "A+"
+            else if quality_score >= 1
+                result := "A"
+            else if quality_score >= -1
+                result := "A-"
+            else
+                result := "B+"
+        else if tier == "B"
+            if quality_score >= 2
+                result := "B+"
+            else if quality_score >= 0
+                result := "B"
+            else
+                result := "B-"
+        else
+            result := "C"
+
+    result
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 8: INVERSION DETECTION (Updated for Phase 2)
+// ══════════════════════════════════════════════════════════════════════
+
 check_inversions() =>
-    if barstate.isconfirmed and array.size(g_fvg_array) > 0
-        // Iterate backwards to safely remove items
-        for i = array.size(g_fvg_array) - 1 to 0
-            if i < array.size(g_fvg_array)  // Safety check
+    int fvg_size = array.size(g_fvg_array)
+    if barstate.isconfirmed and fvg_size > 0
+        for i = fvg_size - 1 to 0
+            if i >= 0 and i < array.size(g_fvg_array)  // Use fresh size check since array may be modified
                 fvg = array.get(g_fvg_array, i)
 
                 if fvg.status == "active"
-                    // IMPORTANT: Only check inversions for FVGs that are at least 1 bar old
-                    // This prevents false inversions on the formation candle
                     fvg_age = bar_index - fvg.end_bar
 
                     if fvg_age >= 1
                         bool inverted = false
 
-                        // ─────────────────────────────────────────────────
                         // Bullish FVG Inversion
-                        // A bullish FVG sits BELOW price (gap between high[2] and low[0])
-                        // It acts as potential SUPPORT
-                        //
-                        // INVERSION happens when:
-                        // - Price comes DOWN into the zone
-                        // - Candle body closes BELOW the FVG bottom
-                        // - This means SUPPORT FAILED and got filled through
-                        // - Result: BEARISH IFVG (zone now acts as resistance)
-                        // ─────────────────────────────────────────────────
                         if fvg.is_bullish
-                            // Price must penetrate INTO the zone (low goes into the gap)
                             price_entered_zone = low <= fvg.top and low >= fvg.bottom
-
-                            // Or price went completely through the zone
                             price_through_zone = low < fvg.bottom
-
-                            // INVERSION: Candle body closes BELOW the FVG bottom
-                            // This means the support failed - gap is filled downward
                             body_closes_below = close < fvg.bottom
 
                             if (price_entered_zone or price_through_zone) and body_closes_below
                                 inverted := true
 
-                        // ─────────────────────────────────────────────────
                         // Bearish FVG Inversion
-                        // A bearish FVG sits ABOVE price (gap between low[2] and high[0])
-                        // It acts as potential RESISTANCE
-                        //
-                        // INVERSION happens when:
-                        // - Price comes UP into the zone
-                        // - Candle body closes ABOVE the FVG top
-                        // - This means RESISTANCE FAILED and got filled through
-                        // - Result: BULLISH IFVG (zone now acts as support)
-                        // ─────────────────────────────────────────────────
                         else
-                            // Price must penetrate INTO the zone (high goes into the gap)
                             price_entered_zone = high >= fvg.bottom and high <= fvg.top
-
-                            // Or price went completely through the zone
                             price_through_zone = high > fvg.top
-
-                            // INVERSION: Candle body closes ABOVE the FVG top
-                            // This means the resistance failed - gap is filled upward
                             body_closes_above = close > fvg.top
 
                             if (price_entered_zone or price_through_zone) and body_closes_above
                                 inverted := true
 
-                        // ─────────────────────────────────────────────────
-                        // Process Inversion
-                        // ─────────────────────────────────────────────────
+                        // Process Inversion with Phase 2 enhancements
                         if inverted
-                            // Update FVG status
                             fvg.status := "inverted"
 
-                            // Delete the FVG drawing (will be replaced by IFVG)
+                            // Delete FVG drawings
                             if not na(fvg.box_id)
                                 box.delete(fvg.box_id)
                             if not na(fvg.label_id)
                                 label.delete(fvg.label_id)
 
+                            // IFVG direction is INVERTED
+                            bool ifvg_is_bullish = not fvg.is_bullish
+
+                            // Find BE point
+                            float be_level = na
+                            if ifvg_is_bullish
+                                // Bullish IFVG: BE is next internal low
+                                be_level := find_next_internal_low(fvg.start_bar)
+                                if na(be_level)
+                                    be_level := fvg.bottom  // Alternate: use FVG bottom
+                            else
+                                // Bearish IFVG: BE is next internal high
+                                be_level := find_next_internal_high(fvg.start_bar)
+                                if na(be_level)
+                                    be_level := fvg.top  // Alternate: use FVG top
+
+                            // Check if BE is still intact
+                            bool entry_valid = true
+                            if ifvg_is_bullish
+                                entry_valid := low > be_level
+                            else
+                                entry_valid := high < be_level
+
+                            // Find DOL (target)
+                            Liquidity dol = find_dol(ifvg_is_bullish, close)
+                            bool has_dol = not na(dol)
+
+                            // Check for recent sweep
+                            bool has_sweep = check_recent_sweep(not ifvg_is_bullish, 20)
+
+                            // Assess momentum
+                            string momentum = assess_momentum(open, high, low, close)
+
+                            // Calculate grade
+                            // Note: delivery from FVG requires more context, defaulting to false for now
+                            bool has_delivery = false
+                            bool in_optimal_zone = true  // Will be calculated in Phase 3 with PD zones
+                            bool in_wrong_zone = false
+                            bool fvg_singular = true  // Assuming singular for now
+
+                            string grade = calculate_grade(
+                                has_sweep, has_delivery, momentum, has_dol,
+                                in_optimal_zone, in_wrong_zone, fvg_singular
+                            )
+
+                            // Calculate stop loss
+                            float stop_loss = calculate_stop_loss(ifvg_is_bullish, fvg.bottom, fvg.top, close)
+
                             // Create IFVG
-                            // CRITICAL: Direction is INVERTED from original FVG
-                            // - Bullish FVG inverted → Bearish IFVG (resistance)
-                            // - Bearish FVG inverted → Bullish IFVG (support)
                             new_ifvg = IFVG.new(
                                 top = fvg.top,
                                 bottom = fvg.bottom,
@@ -343,191 +1079,404 @@ check_inversions() =>
                                 start_bar = fvg.start_bar,
                                 inversion_bar = bar_index,
                                 inversion_close = close,
-                                is_bullish = not fvg.is_bullish,  // INVERTED direction
+                                is_bullish = ifvg_is_bullish,
                                 status = "inverted",
-                                grade = "B",  // Default grade for Phase 1 (grading in Phase 2)
+                                grade = grade,
+                                entry_valid = entry_valid,
+                                be_level = be_level,
+                                be_status = entry_valid ? "intact" : "taken",
+                                stop_loss = stop_loss,
+                                dol = dol,
+                                has_sweep = has_sweep,
+                                has_delivery = has_delivery,
+                                momentum = momentum,
                                 box_id = na,
-                                label_id = na
+                                label_id = na,
+                                be_line_id = na
                             )
 
                             array.push(g_ifvg_array, new_ifvg)
-
-                            // Remove from FVG array
                             array.remove(g_fvg_array, i)
 
 // ══════════════════════════════════════════════════════════════════════
-// SECTION 7: MITIGATION DETECTION
+// SECTION 9: BE STATUS & MITIGATION DETECTION
 // ══════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────
-// Check if any IFVG has been mitigated (candle body closes through)
-// Returns number of mitigations processed
+// Update BE status for all active IFVGs
+// ─────────────────────────────────────────────────────────────────────
+update_be_status() =>
+    int ifvg_size = array.size(g_ifvg_array)
+    if barstate.isconfirmed and ifvg_size > 0
+        for i = 0 to ifvg_size - 1
+            if i < ifvg_size
+                ifvg = array.get(g_ifvg_array, i)
+
+                if ifvg.status == "inverted" and ifvg.be_status == "intact"
+                    // Check if BE has been taken
+                    if ifvg.is_bullish
+                        // Bullish IFVG: BE taken if price goes below BE level
+                        if low < ifvg.be_level
+                            ifvg.be_status := "taken"
+                            ifvg.entry_valid := false
+                    else
+                        // Bearish IFVG: BE taken if price goes above BE level
+                        if high > ifvg.be_level
+                            ifvg.be_status := "taken"
+                            ifvg.entry_valid := false
+
+// ─────────────────────────────────────────────────────────────────────
+// Check IFVG mitigations
 // ─────────────────────────────────────────────────────────────────────
 check_mitigations() =>
     int mitigation_count = 0
+    int ifvg_size = array.size(g_ifvg_array)
 
-    if barstate.isconfirmed and array.size(g_ifvg_array) > 0
-        for i = array.size(g_ifvg_array) - 1 to 0
-            if i < array.size(g_ifvg_array)
+    if barstate.isconfirmed and ifvg_size > 0
+        for i = ifvg_size - 1 to 0
+            if i >= 0 and i < array.size(g_ifvg_array)  // Use fresh size check since array may be modified
                 ifvg = array.get(g_ifvg_array, i)
 
                 if ifvg.status == "inverted"
                     bool mitigated = false
 
-                    // ─────────────────────────────────────────────────
                     // Bullish IFVG Mitigation
-                    // Candle body closes BELOW the IFVG zone
-                    // (Support has failed)
-                    // ─────────────────────────────────────────────────
                     if ifvg.is_bullish
-                        // Mitigation: close below the zone bottom
                         if close < ifvg.bottom
                             mitigated := true
-
-                    // ─────────────────────────────────────────────────
                     // Bearish IFVG Mitigation
-                    // Candle body closes ABOVE the IFVG zone
-                    // (Resistance has failed)
-                    // ─────────────────────────────────────────────────
                     else
-                        // Mitigation: close above the zone top
                         if close > ifvg.top
                             mitigated := true
 
-                    // ─────────────────────────────────────────────────
-                    // Process Mitigation - Remove from chart
-                    // ─────────────────────────────────────────────────
                     if mitigated
-                        // Delete drawings
                         if not na(ifvg.box_id)
                             box.delete(ifvg.box_id)
                         if not na(ifvg.label_id)
                             label.delete(ifvg.label_id)
+                        if not na(ifvg.be_line_id)
+                            line.delete(ifvg.be_line_id)
 
-                        // Remove from array
                         array.remove(g_ifvg_array, i)
                         mitigation_count += 1
 
     mitigation_count
 
 // ══════════════════════════════════════════════════════════════════════
-// SECTION 8: RENDERING
+// SECTION 10: RENDERING
 // ══════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────
 // Render Active FVG Boxes
 // ─────────────────────────────────────────────────────────────────────
 render_fvg_boxes() =>
-    if i_show_active_fvg and array.size(g_fvg_array) > 0
-        for i = 0 to array.size(g_fvg_array) - 1
-            fvg = array.get(g_fvg_array, i)
+    int fvg_size = array.size(g_fvg_array)
+    if i_show_active_fvg and fvg_size > 0
+        for i = 0 to fvg_size - 1
+            if i < fvg_size
+                fvg = array.get(g_fvg_array, i)
 
-            if fvg.status == "active"
-                // Delete old box to update
-                if not na(fvg.box_id)
-                    box.delete(fvg.box_id)
-                if not na(fvg.label_id)
-                    label.delete(fvg.label_id)
+                if fvg.status == "active"
+                    if not na(fvg.box_id)
+                        box.delete(fvg.box_id)
+                    if not na(fvg.label_id)
+                        label.delete(fvg.label_id)
 
-                // Create/update box with user-configurable border
-                bg_color = get_fvg_color(fvg.is_bullish, false)
-                border_color = get_border_color(fvg.is_bullish)
-                border_style = get_border_style(i_fvg_border_style)
+                    bg_color = get_fvg_color(fvg.is_bullish, false)
+                    border_color = get_border_color(fvg.is_bullish)
+                    border_style = get_border_style(i_fvg_border_style)
+                    right_edge = bar_index + i_extend_bars
 
-                // Calculate right edge for box
-                right_edge = bar_index + i_extend_bars
-
-                fvg.box_id := box.new(
-                    left = fvg.start_bar,
-                    top = fvg.top,
-                    right = right_edge,
-                    bottom = fvg.bottom,
-                    bgcolor = bg_color,
-                    border_color = border_color,
-                    border_width = i_fvg_border_width,
-                    border_style = border_style
-                )
-
-                // Create label INSIDE the box at bottom-right corner
-                if i_show_labels
-                    label_text = fvg.is_bullish ? "FVG ▲" : "FVG ▼"
-                    // Position label inside box at bottom-right
-                    label_x = right_edge - 2
-                    label_y = fvg.bottom
-
-                    fvg.label_id := label.new(
-                        x = label_x,
-                        y = label_y,
-                        text = label_text,
-                        style = label.style_none,
-                        color = color.new(color.black, 100),  // Transparent background
-                        textcolor = border_color,
-                        size = get_label_size(),
-                        textalign = text.align_right,
-                        yloc = yloc.price
+                    fvg.box_id := box.new(
+                        left = fvg.start_bar,
+                        top = fvg.top,
+                        right = right_edge,
+                        bottom = fvg.bottom,
+                        bgcolor = bg_color,
+                        border_color = border_color,
+                        border_width = i_fvg_border_width,
+                        border_style = border_style
                     )
 
+                    if i_show_labels
+                        label_text = fvg.is_bullish ? "FVG ▲" : "FVG ▼"
+                        fvg.label_id := label.new(
+                            x = right_edge - 2,
+                            y = fvg.bottom,
+                            text = label_text,
+                            style = label.style_none,
+                            color = color.new(color.black, 100),
+                            textcolor = border_color,
+                            size = get_label_size(),
+                            textalign = text.align_right,
+                            yloc = yloc.price
+                        )
+
 // ─────────────────────────────────────────────────────────────────────
-// Render IFVG Boxes (Inverted FVGs)
+// Render IFVG Boxes (Phase 2: with grade and BE)
 // ─────────────────────────────────────────────────────────────────────
 render_ifvg_boxes() =>
-    if i_show_ifvg and array.size(g_ifvg_array) > 0
-        for i = 0 to array.size(g_ifvg_array) - 1
-            ifvg = array.get(g_ifvg_array, i)
+    int ifvg_size = array.size(g_ifvg_array)
+    if i_show_ifvg and ifvg_size > 0
+        for i = 0 to ifvg_size - 1
+            if i < ifvg_size
+                ifvg = array.get(g_ifvg_array, i)
 
-            if ifvg.status == "inverted"
-                // Delete old box to update
-                if not na(ifvg.box_id)
-                    box.delete(ifvg.box_id)
-                if not na(ifvg.label_id)
-                    label.delete(ifvg.label_id)
+                if ifvg.status == "inverted" and grade_meets_minimum(ifvg.grade, i_min_grade_display)
+                    // Delete old drawings
+                    if not na(ifvg.box_id)
+                        box.delete(ifvg.box_id)
+                    if not na(ifvg.label_id)
+                        label.delete(ifvg.label_id)
+                    if not na(ifvg.be_line_id)
+                        line.delete(ifvg.be_line_id)
 
-                // Create/update box with user-configurable border for IFVG
-                bg_color = get_fvg_color(ifvg.is_bullish, true)
-                border_color = get_border_color(ifvg.is_bullish)
-                border_style = get_border_style(i_ifvg_border_style)
+                    bg_color = get_fvg_color(ifvg.is_bullish, true)
+                    border_color = get_border_color(ifvg.is_bullish)
+                    border_style = get_border_style(i_ifvg_border_style)
+                    right_edge = bar_index + i_extend_bars
 
-                // Calculate right edge for box
+                    // Draw IFVG box
+                    ifvg.box_id := box.new(
+                        left = ifvg.start_bar,
+                        top = ifvg.top,
+                        right = right_edge,
+                        bottom = ifvg.bottom,
+                        bgcolor = bg_color,
+                        border_color = border_color,
+                        border_width = i_ifvg_border_width,
+                        border_style = border_style
+                    )
+
+                    // Draw label with grade
+                    if i_show_labels
+                        grade_text = i_show_grade_label ? ifvg.grade + " " : ""
+                        entry_status = ifvg.entry_valid ? "✓" : "✗"
+                        label_text = grade_text + "IFVG " + entry_status + (ifvg.is_bullish ? " ▲" : " ▼")
+
+                        label_color = grade_to_color(ifvg.grade)
+
+                        ifvg.label_id := label.new(
+                            x = right_edge - 2,
+                            y = ifvg.bottom,
+                            text = label_text,
+                            style = label.style_none,
+                            color = color.new(color.black, 100),
+                            textcolor = label_color,
+                            size = get_label_size(),
+                            textalign = text.align_right,
+                            yloc = yloc.price
+                        )
+
+                    // Draw BE line
+                    if i_show_be_level and not na(ifvg.be_level)
+                        be_line_color = ifvg.be_status == "intact" ? i_be_color : color.gray
+                        be_line_style = ifvg.be_status == "intact" ? line.style_dashed : line.style_dotted
+
+                        ifvg.be_line_id := line.new(
+                            x1 = ifvg.inversion_bar,
+                            y1 = ifvg.be_level,
+                            x2 = right_edge,
+                            y2 = ifvg.be_level,
+                            color = be_line_color,
+                            style = be_line_style,
+                            width = 1
+                        )
+
+// ─────────────────────────────────────────────────────────────────────
+// Render Liquidity Lines (Phase 2 - Enhanced with quality indicators)
+// ─────────────────────────────────────────────────────────────────────
+render_liquidity_lines() =>
+    int liq_size = array.size(g_liquidity_array)
+    if liq_size > 0
+        for i = 0 to liq_size - 1
+            if i < liq_size
+                liq = array.get(g_liquidity_array, i)
+
+                // Skip if feature is disabled
+                if (liq.liq_type == "EQH" or liq.liq_type == "EQL") and not i_show_eqh_eql
+                    continue
+                if (liq.liq_type == "ITH" or liq.liq_type == "ITL") and not i_show_ith_itl
+                    continue
+
+                // Skip mitigated EQL/EQH (swept OR broken through) if user doesn't want to see them
+                if (liq.is_swept or not liq.is_valid) and not i_show_swept_eqhl
+                    if liq.liq_type == "EQH" or liq.liq_type == "EQL"
+                        continue
+
+                // Delete old drawings
+                if not na(liq.line_id)
+                    line.delete(liq.line_id)
+                if not na(liq.label_id)
+                    label.delete(liq.label_id)
+
+                // Determine color and style based on type, quality, and status
+                line_color = color.gray
+                line_style = line.style_solid
+                int line_width = 1
+
+                if liq.liq_type == "EQH" or liq.liq_type == "EQL"
+                    // Base color depends on quality
+                    if liq.quality == "perfect"
+                        line_color := color.new(#FF6600, 0)  // Bright orange for perfect
+                        line_width := 2
+                    else
+                        line_color := i_liq_color  // Standard orange for relative
+
+                    // Modify for swept status
+                    if liq.is_swept
+                        line_color := color.new(color.gray, 50)  // Gray out swept
+                        line_style := line.style_dotted
+                    else if not liq.is_valid
+                        line_color := color.new(color.gray, 70)  // Faded if broken through
+                        line_style := line.style_dotted
+                    else
+                        line_style := line.style_solid
+
+                else if liq.liq_type == "ITH" or liq.liq_type == "ITL"
+                    line_color := liq.is_swept ? color.new(i_ithl_color, 70) : i_ithl_color
+                    line_style := line.style_dashed
+
                 right_edge = bar_index + i_extend_bars
 
-                ifvg.box_id := box.new(
-                    left = ifvg.start_bar,
-                    top = ifvg.top,
-                    right = right_edge,
-                    bottom = ifvg.bottom,
-                    bgcolor = bg_color,
-                    border_color = border_color,
-                    border_width = i_ifvg_border_width,
-                    border_style = border_style
+                // Draw line
+                liq.line_id := line.new(
+                    x1 = liq.bar_idx,
+                    y1 = liq.level,
+                    x2 = right_edge,
+                    y2 = liq.level,
+                    color = line_color,
+                    style = line_style,
+                    width = line_width
                 )
 
-                // Create label INSIDE the box at bottom-right corner with grade
+                // Draw label with enhanced info
                 if i_show_labels
-                    label_text = "IFVG " + ifvg.grade + (ifvg.is_bullish ? " ▲" : " ▼")
-                    // Position label inside box at bottom-right
-                    label_x = right_edge - 2
-                    label_y = ifvg.bottom
+                    label_text = liq.liq_type
 
-                    ifvg.label_id := label.new(
-                        x = label_x,
-                        y = label_y,
+                    if liq.liq_type == "EQH" or liq.liq_type == "EQL"
+                        // Add quality indicator
+                        string quality_marker = ""
+                        if liq.quality == "perfect"
+                            quality_marker := "★"
+                        else if liq.quality == "relative"
+                            quality_marker := "~"
+
+                        // Build label: "EQL★ (2)" or "EQH~ (3)"
+                        label_text := liq.liq_type + quality_marker + " (" + str.tostring(liq.touch_count) + ")"
+
+                    // Add status indicator
+                    if liq.is_swept
+                        label_text := label_text + " ✗"
+                    else if not liq.is_valid
+                        label_text := label_text + " ⊘"  // Broken through but not swept
+
+                    liq.label_id := label.new(
+                        x = right_edge,
+                        y = liq.level,
                         text = label_text,
                         style = label.style_none,
-                        color = color.new(color.black, 100),  // Transparent background
-                        textcolor = border_color,
-                        size = get_label_size(),
-                        textalign = text.align_right,
+                        color = color.new(color.black, 100),
+                        textcolor = line_color,
+                        size = size.tiny,
+                        textalign = text.align_left,
                         yloc = yloc.price
                     )
 
+// ─────────────────────────────────────────────────────────────────────
+// Find Best IFVG for dashboard
+// ─────────────────────────────────────────────────────────────────────
+find_best_ifvg() =>
+    IFVG best = na
+    int best_grade_value = 0
+    int arr_size = array.size(g_ifvg_array)
+
+    if arr_size > 0
+        for i = 0 to arr_size - 1
+            if i < arr_size  // Extra safety check
+                ifvg = array.get(g_ifvg_array, i)
+                if ifvg.status == "inverted"
+                    grade_val = grade_to_value(ifvg.grade)
+                    if grade_val > best_grade_value
+                        best_grade_value := grade_val
+                        best := ifvg
+
+    best
+
 // ══════════════════════════════════════════════════════════════════════
-// SECTION 9: MAIN EXECUTION LOOP
+// SECTION 11: DASHBOARD (Phase 2 Enhanced)
 // ══════════════════════════════════════════════════════════════════════
 
-// Only run if indicator is enabled
+var table dashboard = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+
+render_dashboard(IFVG best_ifvg) =>
+    if barstate.islast
+        // Row 0: Title
+        table.cell(dashboard, 0, 0, "IFVG PRO v2.0", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+        table.cell(dashboard, 1, 0, "", text_color=color.white, text_size=size.small)
+
+        // Row 1: Active FVGs
+        table.cell(dashboard, 0, 1, "Active FVGs:", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+        table.cell(dashboard, 1, 1, str.tostring(array.size(g_fvg_array)), text_color=color.white, text_size=size.tiny, text_halign=text.align_right)
+
+        // Row 2: Active IFVGs
+        table.cell(dashboard, 0, 2, "Active IFVGs:", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+        table.cell(dashboard, 1, 2, str.tostring(array.size(g_ifvg_array)), text_color=color.white, text_size=size.tiny, text_halign=text.align_right)
+
+        // Row 3: Liquidity Levels
+        table.cell(dashboard, 0, 3, "Liquidity:", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+        table.cell(dashboard, 1, 3, str.tostring(array.size(g_liquidity_array)), text_color=color.white, text_size=size.tiny, text_halign=text.align_right)
+
+        // Row 4: Divider
+        table.cell(dashboard, 0, 4, "─────────", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+        table.cell(dashboard, 1, 4, "────", text_color=color.gray, text_size=size.tiny, text_halign=text.align_right)
+
+        // Row 5: Best Setup
+        best_grade = not na(best_ifvg) ? best_ifvg.grade : "-"
+        best_color = not na(best_ifvg) ? grade_to_color(best_ifvg.grade) : color.gray
+        table.cell(dashboard, 0, 5, "Best Setup:", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+        table.cell(dashboard, 1, 5, best_grade + " IFVG", text_color=best_color, text_size=size.tiny, text_halign=text.align_right)
+
+        // Row 6: Entry Status
+        entry_text = not na(best_ifvg) ? (best_ifvg.entry_valid ? "VALID" : "INVALID") : "-"
+        entry_color = not na(best_ifvg) and best_ifvg.entry_valid ? color.green : color.red
+        if na(best_ifvg)
+            entry_color := color.gray
+        table.cell(dashboard, 0, 6, "Entry:", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+        table.cell(dashboard, 1, 6, entry_text, text_color=entry_color, text_size=size.tiny, text_halign=text.align_right)
+
+        // Row 7: DOL Target
+        dol_text = "-"
+        if not na(best_ifvg) and not na(best_ifvg.dol)
+            dol_text := best_ifvg.dol.liq_type + " @ " + str.tostring(best_ifvg.dol.level, format.mintick)
+        table.cell(dashboard, 0, 7, "DOL:", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+        table.cell(dashboard, 1, 7, dol_text, text_color=color.white, text_size=size.tiny, text_halign=text.align_right)
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 12: MAIN EXECUTION LOOP
+// ══════════════════════════════════════════════════════════════════════
+
 if i_show_indicator
     // ─────────────────────────────────────────────────────────────────
-    // Step 1: Detect new FVGs
+    // Step 1: Detect swing points for liquidity
+    // ─────────────────────────────────────────────────────────────────
+    detect_swing_points()
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 2: Check for EQH/EQL formations
+    // ─────────────────────────────────────────────────────────────────
+    check_equal_highs()
+    check_equal_lows()
+    create_internal_levels()
+    cleanup_liquidity_array()
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 3: Check for liquidity sweeps
+    // ─────────────────────────────────────────────────────────────────
+    check_liquidity_sweeps()
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 4: Detect new FVGs
     // ─────────────────────────────────────────────────────────────────
     new_fvg = detect_fvg()
     if not na(new_fvg)
@@ -535,33 +1484,30 @@ if i_show_indicator
         cleanup_fvg_array()
 
     // ─────────────────────────────────────────────────────────────────
-    // Step 2: Check for inversions (FVG → IFVG)
+    // Step 5: Check for inversions (FVG → IFVG)
     // ─────────────────────────────────────────────────────────────────
     check_inversions()
     cleanup_ifvg_array()
 
     // ─────────────────────────────────────────────────────────────────
-    // Step 3: Check for mitigations (IFVG removal)
+    // Step 6: Update BE status
+    // ─────────────────────────────────────────────────────────────────
+    update_be_status()
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 7: Check for mitigations (IFVG removal)
     // ─────────────────────────────────────────────────────────────────
     check_mitigations()
 
     // ─────────────────────────────────────────────────────────────────
-    // Step 4: Render all elements
+    // Step 8: Find best IFVG for dashboard
+    // ─────────────────────────────────────────────────────────────────
+    IFVG current_best_ifvg = find_best_ifvg()
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 9: Render all elements
     // ─────────────────────────────────────────────────────────────────
     render_fvg_boxes()
     render_ifvg_boxes()
-
-// ══════════════════════════════════════════════════════════════════════
-// SECTION 10: DEBUG INFO (Optional - can be removed in production)
-// ══════════════════════════════════════════════════════════════════════
-
-// Display counts on chart (for debugging)
-var table debug_table = table.new(position.top_right, 2, 3, bgcolor=color.new(color.black, 80))
-
-if barstate.islast and i_show_indicator
-    table.cell(debug_table, 0, 0, "Active FVGs:", text_color=color.gray, text_size=size.small)
-    table.cell(debug_table, 1, 0, str.tostring(array.size(g_fvg_array)), text_color=color.white, text_size=size.small)
-    table.cell(debug_table, 0, 1, "Active IFVGs:", text_color=color.gray, text_size=size.small)
-    table.cell(debug_table, 1, 1, str.tostring(array.size(g_ifvg_array)), text_color=color.white, text_size=size.small)
-    table.cell(debug_table, 0, 2, "ATR:", text_color=color.gray, text_size=size.small)
-    table.cell(debug_table, 1, 2, str.tostring(atr_value, format.mintick), text_color=color.white, text_size=size.small)
+    render_liquidity_lines()
+    render_dashboard(current_best_ifvg)

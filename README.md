@@ -13,7 +13,7 @@
 
 [![Pine Script](https://img.shields.io/badge/Pine%20Script-v6-brightgreen?style=for-the-badge&logo=tradingview)](https://www.tradingview.com/pine-script-docs/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Phase%201%20Complete-success?style=for-the-badge)]()
+[![Status](https://img.shields.io/badge/Status-Phase%202%20Complete-success?style=for-the-badge)]()
 
 *A professional-grade TradingView indicator implementing the IFVG trading strategy*
 
@@ -76,7 +76,7 @@
 <tr>
 <td width="50%">
 
-### 🎯 Core Detection
+### 🎯 Core Detection (Phase 1)
 ```
 ╔════════════════════════════════════╗
 ║  ✓ FVG Detection (Bullish/Bearish) ║
@@ -101,6 +101,36 @@
 
 </td>
 </tr>
+<tr>
+<td width="50%">
+
+### 📊 Liquidity Detection (Phase 2)
+```
+╔════════════════════════════════════╗
+║  ✓ EQH (Equal Highs) Detection     ║
+║  ✓ EQL (Equal Lows) Detection      ║
+║  ✓ ITH (Internal High) Tracking    ║
+║  ✓ ITL (Internal Low) Tracking     ║
+║  ✓ Liquidity Sweep Detection       ║
+╚════════════════════════════════════╝
+```
+
+</td>
+<td width="50%">
+
+### ⭐ Grading System (Phase 2)
+```
+╔════════════════════════════════════╗
+║  ✓ A+ to C Grade Algorithm         ║
+║  ✓ BE Point Tracking               ║
+║  ✓ Entry Valid/Invalid Status      ║
+║  ✓ DOL (Draw on Liquidity) Target  ║
+║  ✓ Momentum Assessment             ║
+╚════════════════════════════════════╝
+```
+
+</td>
+</tr>
 </table>
 
 ---
@@ -117,9 +147,9 @@
     │   PHASE 1                PHASE 2                PHASE 3               PHASE 4  │
     │   ════════               ════════               ════════              ════════  │
     │                                                                                 │
-    │   ██████████             ░░░░░░░░░░             ░░░░░░░░░░            ░░░░░░░░░ │
-    │   █ DONE ██             │ PENDING │            │ PENDING │           │ PENDING │
-    │   ██████████             ░░░░░░░░░░             ░░░░░░░░░░            ░░░░░░░░░ │
+    │   ██████████             ██████████             ░░░░░░░░░░            ░░░░░░░░░ │
+    │   █ DONE ██             █ DONE ██             │ PENDING │           │ PENDING │
+    │   ██████████             ██████████             ░░░░░░░░░░            ░░░░░░░░░ │
     │                                                                                 │
     │   ▪ FVG Detection        ▪ Liquidity           ▪ Multi-TF            ▪ Dashboard│
     │   ▪ IFVG Inversion        Detection            ▪ HTF Bias            ▪ Alerts   │
@@ -130,7 +160,7 @@
     └─────────────────────────────────────────────────────────────────────────────────┘
 
                             ════════════════════════════════
-                                    CURRENT: PHASE 1 ✓
+                                    CURRENT: PHASE 2 ✓
                             ════════════════════════════════
 ```
 
