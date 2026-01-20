@@ -1,0 +1,567 @@
+// ╔══════════════════════════════════════════════════════════════════╗
+// ║                     IFVG INDICATOR v1.0                          ║
+// ║                         Phase 1: Core Engine                     ║
+// ║                                                                  ║
+// ║  Created: 2026-01-20                                             ║
+// ║  Based on DodgysDD IFVG Strategy                                 ║
+// ║                                                                  ║
+// ║  Phase 1 Features:                                               ║
+// ║  - FVG Detection (current timeframe)                             ║
+// ║  - IFVG Inversion Detection                                      ║
+// ║  - Basic visualization (boxes)                                   ║
+// ║  - Mitigation tracking                                           ║
+// ╚══════════════════════════════════════════════════════════════════╝
+
+//@version=6
+indicator("IFVG Indicator", shorttitle="IFVG", overlay=true,
+          max_bars_back=500,
+          max_boxes_count=500,
+          max_lines_count=500,
+          max_labels_count=500)
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 1: TYPE DEFINITIONS
+// ══════════════════════════════════════════════════════════════════════
+
+// FVG Status Enum (using strings for clarity)
+// "active"    - FVG detected, not yet inverted
+// "inverted"  - FVG has been inverted (candle body closed through)
+// "mitigated" - Price has fully closed through the inverted zone
+
+// Type: Fair Value Gap
+type FVG
+    float top           // Upper boundary of gap
+    float bottom        // Lower boundary of gap
+    float mid           // Midpoint
+    int start_bar       // Bar index where FVG starts (candle 1 of 3)
+    int end_bar         // Bar index where FVG ends (candle 3 of 3)
+    bool is_bullish     // true = bullish FVG, false = bearish FVG
+    string status       // "active", "inverted", "mitigated"
+    string timeframe    // Source timeframe ("" for current)
+    box box_id          // Reference to drawn box
+    label label_id      // Reference to label
+
+// Type: Inverted Fair Value Gap (extends FVG with inversion data)
+type IFVG
+    float top           // Upper boundary (inherited from source FVG)
+    float bottom        // Lower boundary (inherited from source FVG)
+    float mid           // Midpoint
+    int start_bar       // Original FVG start bar
+    int inversion_bar   // Bar where inversion occurred
+    float inversion_close  // Close price of inversion candle
+    bool is_bullish     // Direction
+    string status       // "inverted", "mitigated"
+    string grade        // "A+", "A", "A-", "B+", "B", "B-", "C"
+    box box_id          // Reference to drawn box
+    label label_id      // Reference to grade label
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 2: INPUT CONFIGURATION
+// ══════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────
+// General Settings
+// ─────────────────────────────────────────────────────────────────────
+string GROUP_GENERAL = "═══ General Settings ═══"
+i_show_indicator    = input.bool(true, "Enable Indicator", group=GROUP_GENERAL)
+i_max_fvgs          = input.int(20, "Max FVGs to Display", minval=5, maxval=50, group=GROUP_GENERAL,
+                      tooltip="Maximum number of FVG/IFVG zones to display on chart")
+i_extend_bars       = input.int(50, "Extend Boxes (bars)", minval=10, maxval=200, group=GROUP_GENERAL,
+                      tooltip="How many bars into the future to extend FVG boxes")
+
+// ─────────────────────────────────────────────────────────────────────
+// FVG Detection Settings
+// ─────────────────────────────────────────────────────────────────────
+string GROUP_FVG = "═══ FVG Detection ═══"
+i_fvg_atr_period    = input.int(14, "ATR Period", minval=5, maxval=50, group=GROUP_FVG,
+                      tooltip="ATR period used for minimum gap size calculation")
+i_fvg_min_size_mult = input.float(0.25, "Min Gap Size (ATR Multiple)", minval=0.05, maxval=1.0,
+                      step=0.05, group=GROUP_FVG,
+                      tooltip="Minimum FVG size as a multiple of ATR. Lower = more sensitive")
+i_show_active_fvg   = input.bool(true, "Show Active FVGs", group=GROUP_FVG,
+                      tooltip="Display FVGs that haven't been inverted yet")
+i_show_ifvg         = input.bool(true, "Show Inverted FVGs (IFVG)", group=GROUP_FVG,
+                      tooltip="Display FVGs that have been inverted")
+
+// ─────────────────────────────────────────────────────────────────────
+// Visual Settings
+// ─────────────────────────────────────────────────────────────────────
+string GROUP_VISUAL = "═══ Visual Settings ═══"
+i_bullish_color     = input.color(color.green, "Bullish Color", group=GROUP_VISUAL)
+i_bearish_color     = input.color(color.red, "Bearish Color", group=GROUP_VISUAL)
+i_fvg_opacity       = input.int(85, "FVG Opacity (%)", minval=50, maxval=95, group=GROUP_VISUAL,
+                      tooltip="Higher = more transparent. Active FVGs use this opacity")
+i_ifvg_opacity      = input.int(70, "IFVG Opacity (%)", minval=40, maxval=90, group=GROUP_VISUAL,
+                      tooltip="Higher = more transparent. Inverted FVGs use this opacity")
+i_show_labels       = input.bool(true, "Show Labels", group=GROUP_VISUAL)
+i_label_size        = input.string("small", "Label Size", options=["tiny", "small", "normal"], group=GROUP_VISUAL)
+
+// ─────────────────────────────────────────────────────────────────────
+// Border Settings
+// ─────────────────────────────────────────────────────────────────────
+string GROUP_BORDER = "═══ Border Settings ═══"
+i_fvg_border_width  = input.int(1, "FVG Border Width", minval=1, maxval=4, group=GROUP_BORDER,
+                      tooltip="Border thickness for active FVGs")
+i_ifvg_border_width = input.int(2, "IFVG Border Width", minval=1, maxval=4, group=GROUP_BORDER,
+                      tooltip="Border thickness for inverted FVGs")
+i_fvg_border_style  = input.string("Solid", "FVG Border Style", options=["Solid", "Dashed", "Dotted"], group=GROUP_BORDER,
+                      tooltip="Border style for active FVGs")
+i_ifvg_border_style = input.string("Dashed", "IFVG Border Style", options=["Solid", "Dashed", "Dotted"], group=GROUP_BORDER,
+                      tooltip="Border style for inverted FVGs")
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 3: GLOBAL VARIABLES & DATA STORES
+// ══════════════════════════════════════════════════════════════════════
+
+// FVG Arrays
+var array<FVG> g_fvg_array = array.new<FVG>()
+var array<IFVG> g_ifvg_array = array.new<IFVG>()
+
+// Tracking variables
+var int g_fvg_count = 0
+var int g_ifvg_count = 0
+
+// ATR for gap sizing
+atr_value = ta.atr(i_fvg_atr_period)
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 4: UTILITY FUNCTIONS
+// ══════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────
+// Get label size from string
+// ─────────────────────────────────────────────────────────────────────
+get_label_size() =>
+    result = size.small
+    switch i_label_size
+        "tiny"   => result := size.tiny
+        "small"  => result := size.small
+        "normal" => result := size.normal
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Get color based on direction and status
+// ─────────────────────────────────────────────────────────────────────
+get_fvg_color(bool is_bullish, bool is_inverted) =>
+    base_color = is_bullish ? i_bullish_color : i_bearish_color
+    opacity = is_inverted ? i_ifvg_opacity : i_fvg_opacity
+    color.new(base_color, opacity)
+
+get_border_color(bool is_bullish) =>
+    is_bullish ? i_bullish_color : i_bearish_color
+
+// ─────────────────────────────────────────────────────────────────────
+// Get border style from string input
+// ─────────────────────────────────────────────────────────────────────
+get_border_style(string style_str) =>
+    result = line.style_solid
+    switch style_str
+        "Solid"  => result := line.style_solid
+        "Dashed" => result := line.style_dashed
+        "Dotted" => result := line.style_dotted
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Clean up old drawings when array exceeds limit
+// ─────────────────────────────────────────────────────────────────────
+cleanup_fvg_array() =>
+    while array.size(g_fvg_array) > i_max_fvgs
+        old_fvg = array.shift(g_fvg_array)
+        if not na(old_fvg.box_id)
+            box.delete(old_fvg.box_id)
+        if not na(old_fvg.label_id)
+            label.delete(old_fvg.label_id)
+
+cleanup_ifvg_array() =>
+    while array.size(g_ifvg_array) > i_max_fvgs
+        old_ifvg = array.shift(g_ifvg_array)
+        if not na(old_ifvg.box_id)
+            box.delete(old_ifvg.box_id)
+        if not na(old_ifvg.label_id)
+            label.delete(old_ifvg.label_id)
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 5: FVG DETECTION
+// ══════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────
+// Detect Fair Value Gaps
+// FVG forms when there's a gap between candle 1's high/low and candle 3's low/high
+// We check on the THIRD candle (current bar) looking back
+// ─────────────────────────────────────────────────────────────────────
+detect_fvg() =>
+    FVG result = na
+
+    // Only detect on confirmed bars to prevent repainting
+    if barstate.isconfirmed and not na(atr_value)
+        // Calculate minimum gap size
+        min_gap = atr_value * i_fvg_min_size_mult
+
+        // ─────────────────────────────────────────────────────────────
+        // Bullish FVG Detection
+        // Gap between: Candle 1 High (high[2]) and Candle 3 Low (low[0])
+        // Bullish FVG: low[0] > high[2] (current candle's low above 2-bars-ago high)
+        // ─────────────────────────────────────────────────────────────
+        bullish_gap_size = low - high[2]
+
+        if bullish_gap_size > min_gap
+            result := FVG.new(
+                top = low,              // Top of gap = current candle's low
+                bottom = high[2],       // Bottom of gap = 2-bars-ago high
+                mid = (low + high[2]) / 2,
+                start_bar = bar_index - 2,
+                end_bar = bar_index,
+                is_bullish = true,
+                status = "active",
+                timeframe = "",
+                box_id = na,
+                label_id = na
+            )
+
+        // ─────────────────────────────────────────────────────────────
+        // Bearish FVG Detection
+        // Gap between: Candle 1 Low (low[2]) and Candle 3 High (high[0])
+        // Bearish FVG: high[0] < low[2] (current candle's high below 2-bars-ago low)
+        // ─────────────────────────────────────────────────────────────
+        bearish_gap_size = low[2] - high
+
+        if bearish_gap_size > min_gap and na(result)  // Only one FVG per bar
+            result := FVG.new(
+                top = low[2],           // Top of gap = 2-bars-ago low
+                bottom = high,          // Bottom of gap = current candle's high
+                mid = (low[2] + high) / 2,
+                start_bar = bar_index - 2,
+                end_bar = bar_index,
+                is_bullish = false,
+                status = "active",
+                timeframe = "",
+                box_id = na,
+                label_id = na
+            )
+
+    result
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 6: INVERSION DETECTION
+// ══════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────
+// Check if any active FVG has been inverted
+// Inversion = price returns INTO the FVG zone, then candle BODY closes through it
+//
+// KEY RULES:
+// 1. FVG must exist for at least 1 bar before checking inversion
+// 2. Price must actually enter/penetrate the FVG zone (not just touch)
+// 3. Candle body must close on the opposite side of the zone
+// ─────────────────────────────────────────────────────────────────────
+check_inversions() =>
+    if barstate.isconfirmed and array.size(g_fvg_array) > 0
+        // Iterate backwards to safely remove items
+        for i = array.size(g_fvg_array) - 1 to 0
+            if i < array.size(g_fvg_array)  // Safety check
+                fvg = array.get(g_fvg_array, i)
+
+                if fvg.status == "active"
+                    // IMPORTANT: Only check inversions for FVGs that are at least 1 bar old
+                    // This prevents false inversions on the formation candle
+                    fvg_age = bar_index - fvg.end_bar
+
+                    if fvg_age >= 1
+                        bool inverted = false
+
+                        // ─────────────────────────────────────────────────
+                        // Bullish FVG Inversion
+                        // A bullish FVG sits BELOW price (gap between high[2] and low[0])
+                        // It acts as potential SUPPORT
+                        //
+                        // INVERSION happens when:
+                        // - Price comes DOWN into the zone
+                        // - Candle body closes BELOW the FVG bottom
+                        // - This means SUPPORT FAILED and got filled through
+                        // - Result: BEARISH IFVG (zone now acts as resistance)
+                        // ─────────────────────────────────────────────────
+                        if fvg.is_bullish
+                            // Price must penetrate INTO the zone (low goes into the gap)
+                            price_entered_zone = low <= fvg.top and low >= fvg.bottom
+
+                            // Or price went completely through the zone
+                            price_through_zone = low < fvg.bottom
+
+                            // INVERSION: Candle body closes BELOW the FVG bottom
+                            // This means the support failed - gap is filled downward
+                            body_closes_below = close < fvg.bottom
+
+                            if (price_entered_zone or price_through_zone) and body_closes_below
+                                inverted := true
+
+                        // ─────────────────────────────────────────────────
+                        // Bearish FVG Inversion
+                        // A bearish FVG sits ABOVE price (gap between low[2] and high[0])
+                        // It acts as potential RESISTANCE
+                        //
+                        // INVERSION happens when:
+                        // - Price comes UP into the zone
+                        // - Candle body closes ABOVE the FVG top
+                        // - This means RESISTANCE FAILED and got filled through
+                        // - Result: BULLISH IFVG (zone now acts as support)
+                        // ─────────────────────────────────────────────────
+                        else
+                            // Price must penetrate INTO the zone (high goes into the gap)
+                            price_entered_zone = high >= fvg.bottom and high <= fvg.top
+
+                            // Or price went completely through the zone
+                            price_through_zone = high > fvg.top
+
+                            // INVERSION: Candle body closes ABOVE the FVG top
+                            // This means the resistance failed - gap is filled upward
+                            body_closes_above = close > fvg.top
+
+                            if (price_entered_zone or price_through_zone) and body_closes_above
+                                inverted := true
+
+                        // ─────────────────────────────────────────────────
+                        // Process Inversion
+                        // ─────────────────────────────────────────────────
+                        if inverted
+                            // Update FVG status
+                            fvg.status := "inverted"
+
+                            // Delete the FVG drawing (will be replaced by IFVG)
+                            if not na(fvg.box_id)
+                                box.delete(fvg.box_id)
+                            if not na(fvg.label_id)
+                                label.delete(fvg.label_id)
+
+                            // Create IFVG
+                            // CRITICAL: Direction is INVERTED from original FVG
+                            // - Bullish FVG inverted → Bearish IFVG (resistance)
+                            // - Bearish FVG inverted → Bullish IFVG (support)
+                            new_ifvg = IFVG.new(
+                                top = fvg.top,
+                                bottom = fvg.bottom,
+                                mid = fvg.mid,
+                                start_bar = fvg.start_bar,
+                                inversion_bar = bar_index,
+                                inversion_close = close,
+                                is_bullish = not fvg.is_bullish,  // INVERTED direction
+                                status = "inverted",
+                                grade = "B",  // Default grade for Phase 1 (grading in Phase 2)
+                                box_id = na,
+                                label_id = na
+                            )
+
+                            array.push(g_ifvg_array, new_ifvg)
+
+                            // Remove from FVG array
+                            array.remove(g_fvg_array, i)
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 7: MITIGATION DETECTION
+// ══════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────
+// Check if any IFVG has been mitigated (candle body closes through)
+// Returns number of mitigations processed
+// ─────────────────────────────────────────────────────────────────────
+check_mitigations() =>
+    int mitigation_count = 0
+
+    if barstate.isconfirmed and array.size(g_ifvg_array) > 0
+        for i = array.size(g_ifvg_array) - 1 to 0
+            if i < array.size(g_ifvg_array)
+                ifvg = array.get(g_ifvg_array, i)
+
+                if ifvg.status == "inverted"
+                    bool mitigated = false
+
+                    // ─────────────────────────────────────────────────
+                    // Bullish IFVG Mitigation
+                    // Candle body closes BELOW the IFVG zone
+                    // (Support has failed)
+                    // ─────────────────────────────────────────────────
+                    if ifvg.is_bullish
+                        // Mitigation: close below the zone bottom
+                        if close < ifvg.bottom
+                            mitigated := true
+
+                    // ─────────────────────────────────────────────────
+                    // Bearish IFVG Mitigation
+                    // Candle body closes ABOVE the IFVG zone
+                    // (Resistance has failed)
+                    // ─────────────────────────────────────────────────
+                    else
+                        // Mitigation: close above the zone top
+                        if close > ifvg.top
+                            mitigated := true
+
+                    // ─────────────────────────────────────────────────
+                    // Process Mitigation - Remove from chart
+                    // ─────────────────────────────────────────────────
+                    if mitigated
+                        // Delete drawings
+                        if not na(ifvg.box_id)
+                            box.delete(ifvg.box_id)
+                        if not na(ifvg.label_id)
+                            label.delete(ifvg.label_id)
+
+                        // Remove from array
+                        array.remove(g_ifvg_array, i)
+                        mitigation_count += 1
+
+    mitigation_count
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 8: RENDERING
+// ══════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────
+// Render Active FVG Boxes
+// ─────────────────────────────────────────────────────────────────────
+render_fvg_boxes() =>
+    if i_show_active_fvg and array.size(g_fvg_array) > 0
+        for i = 0 to array.size(g_fvg_array) - 1
+            fvg = array.get(g_fvg_array, i)
+
+            if fvg.status == "active"
+                // Delete old box to update
+                if not na(fvg.box_id)
+                    box.delete(fvg.box_id)
+                if not na(fvg.label_id)
+                    label.delete(fvg.label_id)
+
+                // Create/update box with user-configurable border
+                bg_color = get_fvg_color(fvg.is_bullish, false)
+                border_color = get_border_color(fvg.is_bullish)
+                border_style = get_border_style(i_fvg_border_style)
+
+                // Calculate right edge for box
+                right_edge = bar_index + i_extend_bars
+
+                fvg.box_id := box.new(
+                    left = fvg.start_bar,
+                    top = fvg.top,
+                    right = right_edge,
+                    bottom = fvg.bottom,
+                    bgcolor = bg_color,
+                    border_color = border_color,
+                    border_width = i_fvg_border_width,
+                    border_style = border_style
+                )
+
+                // Create label INSIDE the box at bottom-right corner
+                if i_show_labels
+                    label_text = fvg.is_bullish ? "FVG ▲" : "FVG ▼"
+                    // Position label inside box at bottom-right
+                    label_x = right_edge - 2
+                    label_y = fvg.bottom
+
+                    fvg.label_id := label.new(
+                        x = label_x,
+                        y = label_y,
+                        text = label_text,
+                        style = label.style_none,
+                        color = color.new(color.black, 100),  // Transparent background
+                        textcolor = border_color,
+                        size = get_label_size(),
+                        textalign = text.align_right,
+                        yloc = yloc.price
+                    )
+
+// ─────────────────────────────────────────────────────────────────────
+// Render IFVG Boxes (Inverted FVGs)
+// ─────────────────────────────────────────────────────────────────────
+render_ifvg_boxes() =>
+    if i_show_ifvg and array.size(g_ifvg_array) > 0
+        for i = 0 to array.size(g_ifvg_array) - 1
+            ifvg = array.get(g_ifvg_array, i)
+
+            if ifvg.status == "inverted"
+                // Delete old box to update
+                if not na(ifvg.box_id)
+                    box.delete(ifvg.box_id)
+                if not na(ifvg.label_id)
+                    label.delete(ifvg.label_id)
+
+                // Create/update box with user-configurable border for IFVG
+                bg_color = get_fvg_color(ifvg.is_bullish, true)
+                border_color = get_border_color(ifvg.is_bullish)
+                border_style = get_border_style(i_ifvg_border_style)
+
+                // Calculate right edge for box
+                right_edge = bar_index + i_extend_bars
+
+                ifvg.box_id := box.new(
+                    left = ifvg.start_bar,
+                    top = ifvg.top,
+                    right = right_edge,
+                    bottom = ifvg.bottom,
+                    bgcolor = bg_color,
+                    border_color = border_color,
+                    border_width = i_ifvg_border_width,
+                    border_style = border_style
+                )
+
+                // Create label INSIDE the box at bottom-right corner with grade
+                if i_show_labels
+                    label_text = "IFVG " + ifvg.grade + (ifvg.is_bullish ? " ▲" : " ▼")
+                    // Position label inside box at bottom-right
+                    label_x = right_edge - 2
+                    label_y = ifvg.bottom
+
+                    ifvg.label_id := label.new(
+                        x = label_x,
+                        y = label_y,
+                        text = label_text,
+                        style = label.style_none,
+                        color = color.new(color.black, 100),  // Transparent background
+                        textcolor = border_color,
+                        size = get_label_size(),
+                        textalign = text.align_right,
+                        yloc = yloc.price
+                    )
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 9: MAIN EXECUTION LOOP
+// ══════════════════════════════════════════════════════════════════════
+
+// Only run if indicator is enabled
+if i_show_indicator
+    // ─────────────────────────────────────────────────────────────────
+    // Step 1: Detect new FVGs
+    // ─────────────────────────────────────────────────────────────────
+    new_fvg = detect_fvg()
+    if not na(new_fvg)
+        array.push(g_fvg_array, new_fvg)
+        cleanup_fvg_array()
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 2: Check for inversions (FVG → IFVG)
+    // ─────────────────────────────────────────────────────────────────
+    check_inversions()
+    cleanup_ifvg_array()
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 3: Check for mitigations (IFVG removal)
+    // ─────────────────────────────────────────────────────────────────
+    check_mitigations()
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 4: Render all elements
+    // ─────────────────────────────────────────────────────────────────
+    render_fvg_boxes()
+    render_ifvg_boxes()
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 10: DEBUG INFO (Optional - can be removed in production)
+// ══════════════════════════════════════════════════════════════════════
+
+// Display counts on chart (for debugging)
+var table debug_table = table.new(position.top_right, 2, 3, bgcolor=color.new(color.black, 80))
+
+if barstate.islast and i_show_indicator
+    table.cell(debug_table, 0, 0, "Active FVGs:", text_color=color.gray, text_size=size.small)
+    table.cell(debug_table, 1, 0, str.tostring(array.size(g_fvg_array)), text_color=color.white, text_size=size.small)
+    table.cell(debug_table, 0, 1, "Active IFVGs:", text_color=color.gray, text_size=size.small)
+    table.cell(debug_table, 1, 1, str.tostring(array.size(g_ifvg_array)), text_color=color.white, text_size=size.small)
+    table.cell(debug_table, 0, 2, "ATR:", text_color=color.gray, text_size=size.small)
+    table.cell(debug_table, 1, 2, str.tostring(atr_value, format.mintick), text_color=color.white, text_size=size.small)
