@@ -93,9 +93,11 @@ type IFVG
     bool has_delivery   // Delivery from another FVG
     string momentum     // "strong_no_chop", "neutral", "weak_or_choppy"
     box box_id          // Reference to drawn box
-    label label_id      // Reference to grade label
+    label label_id      // Reference to IFVG label (tiny "IFVG" text)
     line be_line_id     // Reference to BE line
     line sl_line_id     // Reference to SL line
+    line entry_line_id  // Reference to entry line (at inversion close)
+    label entry_label_id // Reference to entry line label (grade + direction)
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 2: INPUT CONFIGURATION
@@ -184,8 +186,6 @@ i_bullish_color     = input.color(color.new(#089981, 0), "Bullish Color", group=
 i_bearish_color     = input.color(color.new(#F23645, 0), "Bearish Color", group=GROUP_VISUAL)
 i_fvg_opacity       = input.int(85, "FVG Opacity (%)", minval=50, maxval=95, group=GROUP_VISUAL,
                       tooltip="Higher = more transparent. Active FVGs use this opacity")
-i_ifvg_opacity      = input.int(70, "IFVG Opacity (%)", minval=40, maxval=90, group=GROUP_VISUAL,
-                      tooltip="Higher = more transparent. Inverted FVGs use this opacity")
 i_show_labels       = input.bool(true, "Show Labels", group=GROUP_VISUAL)
 i_label_size        = input.string("small", "Label Size", options=["tiny", "small", "normal"], group=GROUP_VISUAL)
 i_liq_color         = input.color(color.orange, "Liquidity Color", group=GROUP_VISUAL,
@@ -196,6 +196,21 @@ i_be_color          = input.color(color.white, "BE Level Color", group=GROUP_VIS
                       tooltip="Color for break-even level line")
 i_sl_color          = input.color(color.red, "SL Level Color", group=GROUP_VISUAL,
                       tooltip="Color for stop loss level line")
+
+// ─────────────────────────────────────────────────────────────────────
+// IFVG Box & Entry Line Settings
+// ─────────────────────────────────────────────────────────────────────
+string GROUP_IFVG_STYLE = "═══ IFVG Style Settings ═══"
+i_ifvg_box_color    = input.color(color.gray, "IFVG Box Color", group=GROUP_IFVG_STYLE,
+                      tooltip="Fill color for IFVG boxes (translucent gray recommended)")
+i_ifvg_box_opacity  = input.int(60, "IFVG Box Opacity (%)", minval=40, maxval=80, group=GROUP_IFVG_STYLE,
+                      tooltip="Transparency level for IFVG boxes. Higher = more transparent")
+i_show_entry_line   = input.bool(true, "Show Entry Line", group=GROUP_IFVG_STYLE,
+                      tooltip="Display entry line at inversion candle close")
+i_entry_color_bull  = input.color(color.new(#2962FF, 0), "Entry Line Color (Bullish)", group=GROUP_IFVG_STYLE,
+                      tooltip="Color for bullish IFVG entry line (blue)")
+i_entry_color_bear  = input.color(color.new(#F23645, 0), "Entry Line Color (Bearish)", group=GROUP_IFVG_STYLE,
+                      tooltip="Color for bearish IFVG entry line (red)")
 
 // ─────────────────────────────────────────────────────────────────────
 // Border Settings
@@ -240,10 +255,9 @@ get_label_size() =>
 // ─────────────────────────────────────────────────────────────────────
 // Get color based on direction and status
 // ─────────────────────────────────────────────────────────────────────
-get_fvg_color(bool is_bullish, bool is_inverted) =>
+get_fvg_color(bool is_bullish) =>
     base_color = is_bullish ? i_bullish_color : i_bearish_color
-    opacity = is_inverted ? i_ifvg_opacity : i_fvg_opacity
-    color.new(base_color, opacity)
+    color.new(base_color, i_fvg_opacity)
 
 get_border_color(bool is_bullish) =>
     is_bullish ? i_bullish_color : i_bearish_color
@@ -320,6 +334,10 @@ cleanup_ifvg_array() =>
             line.delete(old_ifvg.be_line_id)
         if not na(old_ifvg.sl_line_id)
             line.delete(old_ifvg.sl_line_id)
+        if not na(old_ifvg.entry_line_id)
+            line.delete(old_ifvg.entry_line_id)
+        if not na(old_ifvg.entry_label_id)
+            label.delete(old_ifvg.entry_label_id)
 
 cleanup_liquidity_array() =>
     while array.size(g_liquidity_array) > i_max_liquidity
@@ -1225,7 +1243,9 @@ check_inversions() =>
                                 box_id = na,
                                 label_id = na,
                                 be_line_id = na,
-                                sl_line_id = na
+                                sl_line_id = na,
+                                entry_line_id = na,
+                                entry_label_id = na
                             )
 
                             array.push(g_ifvg_array, new_ifvg)
@@ -1332,6 +1352,10 @@ check_mitigations() =>
                             line.delete(ifvg.be_line_id)
                         if not na(ifvg.sl_line_id)
                             line.delete(ifvg.sl_line_id)
+                        if not na(ifvg.entry_line_id)
+                            line.delete(ifvg.entry_line_id)
+                        if not na(ifvg.entry_label_id)
+                            label.delete(ifvg.entry_label_id)
 
                         array.remove(g_ifvg_array, i)
                         mitigation_count += 1
@@ -1358,7 +1382,7 @@ render_fvg_boxes() =>
                     if not na(fvg.label_id)
                         label.delete(fvg.label_id)
 
-                    bg_color = get_fvg_color(fvg.is_bullish, false)
+                    bg_color = get_fvg_color(fvg.is_bullish)
                     border_color = get_border_color(fvg.is_bullish)
                     border_style = get_border_style(i_fvg_border_style)
                     right_edge = bar_index + i_extend_bars
@@ -1415,6 +1439,12 @@ render_ifvg_boxes() =>
                 if not na(ifvg.sl_line_id)
                     line.delete(ifvg.sl_line_id)
                     ifvg.sl_line_id := na
+                if not na(ifvg.entry_line_id)
+                    line.delete(ifvg.entry_line_id)
+                    ifvg.entry_line_id := na
+                if not na(ifvg.entry_label_id)
+                    label.delete(ifvg.entry_label_id)
+                    ifvg.entry_label_id := na
 
                 // Only render if: enabled, inverted status, meets grade, and under display limit
                 bool should_display = i_show_ifvg and ifvg.status == "inverted" and
@@ -1424,39 +1454,32 @@ render_ifvg_boxes() =>
                 if should_display
                     displayed_count += 1
 
-                    bg_color = get_fvg_color(ifvg.is_bullish, true)
-                    border_color = get_border_color(ifvg.is_bullish)
-                    border_style = get_border_style(i_ifvg_border_style)
+                    // IFVG box: translucent gray with NO borders
+                    ifvg_bg_color = color.new(i_ifvg_box_color, i_ifvg_box_opacity)
                     right_edge = bar_index + i_extend_bars
 
-                    // Draw IFVG box
+                    // Draw IFVG box (gray, no borders)
                     ifvg.box_id := box.new(
                         left = ifvg.start_bar,
                         top = ifvg.top,
                         right = right_edge,
                         bottom = ifvg.bottom,
-                        bgcolor = bg_color,
-                        border_color = border_color,
-                        border_width = i_ifvg_border_width,
-                        border_style = border_style
+                        bgcolor = ifvg_bg_color,
+                        border_color = color.new(color.gray, 100),  // Fully transparent border
+                        border_width = 0,
+                        border_style = line.style_solid
                     )
 
-                    // Draw label with grade
+                    // Draw tiny "IFVG" label at bottom-right corner of box
                     if i_show_labels
-                        grade_text = i_show_grade_label ? ifvg.grade + " " : ""
-                        entry_status = ifvg.entry_valid ? "✓" : "✗"
-                        label_text = grade_text + "IFVG " + entry_status + (ifvg.is_bullish ? " ▲" : " ▼")
-
-                        label_color = grade_to_color(ifvg.grade)
-
                         ifvg.label_id := label.new(
                             x = right_edge - 2,
                             y = ifvg.bottom,
-                            text = label_text,
+                            text = "IFVG",
                             style = label.style_none,
                             color = color.new(color.black, 100),
-                            textcolor = label_color,
-                            size = get_label_size(),
+                            textcolor = color.new(color.gray, 30),  // Subtle gray text
+                            size = size.tiny,
                             textalign = text.align_right,
                             yloc = yloc.price
                         )
@@ -1507,6 +1530,62 @@ render_ifvg_boxes() =>
                                 color = be_line_color,
                                 style = be_line_style,
                                 width = 2
+                            )
+
+                    // ═══════════════════════════════════════════════════════════
+                    // Draw Entry Line at inversion candle close
+                    // Shows Grade + Direction (e.g., "A+ BUY" or "B- SELL")
+                    // ═══════════════════════════════════════════════════════════
+                    if i_show_entry_line
+                        float entry_level = ifvg.inversion_close
+                        if not na(entry_level)
+                            // Entry line color based on direction
+                            entry_line_color = ifvg.is_bullish ? i_entry_color_bull : i_entry_color_bear
+
+                            // Draw entry line
+                            ifvg.entry_line_id := line.new(
+                                x1 = ifvg.inversion_bar,
+                                y1 = entry_level,
+                                x2 = right_edge,
+                                y2 = entry_level,
+                                color = entry_line_color,
+                                style = line.style_solid,
+                                width = 2
+                            )
+
+                            // Build tooltip with grade breakdown
+                            sweep_check = ifvg.has_sweep ? "☑" : "☐"
+                            delivery_check = ifvg.has_delivery ? "☑" : "☐"
+                            momentum_text = ifvg.momentum == "strong_no_chop" ? "Strong" : (ifvg.momentum == "weak_or_choppy" ? "Weak" : "Neutral")
+                            momentum_check = ifvg.momentum == "strong_no_chop" ? "☑" : "☐"
+                            dol_text = not na(ifvg.dol) ? (ifvg.dol.liq_type + " @ " + str.tostring(ifvg.dol.level, format.mintick)) : "None"
+                            dol_check = not na(ifvg.dol) ? "☑" : "☐"
+                            entry_status = ifvg.entry_valid ? "VALID" : "INVALID"
+
+                            tooltip_text = "Grade: " + ifvg.grade + "\n" +
+                                          "─────────────\n" +
+                                          sweep_check + " Sweep\n" +
+                                          delivery_check + " PDA Delivery\n" +
+                                          momentum_check + " Momentum: " + momentum_text + "\n" +
+                                          dol_check + " DOL: " + dol_text + "\n" +
+                                          "─────────────\n" +
+                                          "Entry: " + entry_status
+
+                            // Entry line label: Grade + Direction (positioned on top right of line)
+                            direction_text = ifvg.is_bullish ? "BUY" : "SELL"
+                            entry_label_text = ifvg.grade + " " + direction_text
+
+                            ifvg.entry_label_id := label.new(
+                                x = right_edge,
+                                y = entry_level,
+                                text = entry_label_text,
+                                style = label.style_none,
+                                color = color.new(color.black, 100),
+                                textcolor = entry_line_color,
+                                size = size.small,
+                                textalign = text.align_right,
+                                yloc = yloc.price,
+                                tooltip = tooltip_text
                             )
 
 // ─────────────────────────────────────────────────────────────────────
