@@ -1,6 +1,6 @@
 // ╔══════════════════════════════════════════════════════════════════╗
-// ║                     IFVG INDICATOR v2.0                          ║
-// ║                     Phase 2: Liquidity & Grading                 ║
+// ║                     IFVG INDICATOR v3.0                          ║
+// ║                     Phase 3: Multi-Timeframe                     ║
 // ║                                                                  ║
 // ║  Created: 2026-01-20                                             ║
 // ║  Based on DodgysDD IFVG Strategy                                 ║
@@ -18,6 +18,12 @@
 // ║  - Entry valid/invalid status                                    ║
 // ║  - Stop loss calculation                                         ║
 // ║  - Liquidity sweep detection                                     ║
+// ║                                                                  ║
+// ║  Phase 3 Features:                                               ║
+// ║  - HTF FVG/IFVG detection via request.security                   ║
+// ║  - HTF overlay projection on LTF chart                           ║
+// ║  - HTF bias determination                                        ║
+// ║  - LTF setup filtering based on HTF bias                         ║
 // ╚══════════════════════════════════════════════════════════════════╝
 
 //@version=6
@@ -132,6 +138,27 @@ i_show_ifvg         = input.bool(true, "Show Inverted FVGs (IFVG)", group=GROUP_
                       tooltip="Display FVGs that have been inverted")
 
 // ─────────────────────────────────────────────────────────────────────
+// Higher Timeframe Settings (Phase 3)
+// ─────────────────────────────────────────────────────────────────────
+string GROUP_HTF = "═══ Higher Timeframe (HTF) ═══"
+i_enable_htf        = input.bool(true, "Enable HTF Analysis", group=GROUP_HTF,
+                      tooltip="Enable higher timeframe FVG/IFVG detection for bias")
+i_htf_timeframe     = input.timeframe("60", "HTF Timeframe", group=GROUP_HTF,
+                      tooltip="Higher timeframe for bias determination (e.g., 60 = 1H)")
+i_htf_timeframe_2   = input.timeframe("240", "HTF Timeframe 2 (Optional)", group=GROUP_HTF,
+                      tooltip="Second higher timeframe (e.g., 240 = 4H). Leave same as HTF1 to disable")
+i_show_htf_fvg      = input.bool(true, "Show HTF FVGs", group=GROUP_HTF,
+                      tooltip="Display HTF FVG boxes on chart")
+i_show_htf_ifvg     = input.bool(true, "Show HTF IFVGs", group=GROUP_HTF,
+                      tooltip="Display HTF IFVG boxes on chart")
+i_htf_filter_ltf    = input.bool(true, "Filter LTF by HTF Bias", group=GROUP_HTF,
+                      tooltip="Only show LTF setups that align with HTF bias direction")
+i_htf_box_opacity   = input.int(75, "HTF Box Opacity (%)", minval=50, maxval=95, group=GROUP_HTF,
+                      tooltip="Transparency for HTF boxes. Higher = more transparent")
+i_htf_border_width  = input.int(3, "HTF Border Width", minval=1, maxval=5, group=GROUP_HTF,
+                      tooltip="Thicker borders to distinguish HTF from LTF")
+
+// ─────────────────────────────────────────────────────────────────────
 // Liquidity Detection Settings (Phase 2)
 // ─────────────────────────────────────────────────────────────────────
 string GROUP_LIQ = "═══ Liquidity Detection ═══"
@@ -225,9 +252,15 @@ i_ifvg_border_style = input.string("Dashed", "IFVG Border Style", options=["Soli
 // SECTION 3: GLOBAL VARIABLES & DATA STORES
 // ══════════════════════════════════════════════════════════════════════
 
-// FVG Arrays
+// FVG Arrays (LTF - current timeframe)
 var array<FVG> g_fvg_array = array.new<FVG>()
 var array<IFVG> g_ifvg_array = array.new<IFVG>()
+
+// HTF FVG Arrays (Phase 3)
+var array<FVG> g_htf_fvg_array = array.new<FVG>()
+var array<FVG> g_htf2_fvg_array = array.new<FVG>()
+var array<IFVG> g_htf_ifvg_array = array.new<IFVG>()
+var array<IFVG> g_htf2_ifvg_array = array.new<IFVG>()
 
 // Liquidity Arrays (Phase 2)
 var array<SwingPoint> g_swing_highs = array.new<SwingPoint>()
@@ -480,6 +513,226 @@ detect_fvg() =>
             )
 
     result
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 5B: HTF FVG DETECTION (Phase 3)
+// ══════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────
+// Get HTF OHLC data via request.security
+// ─────────────────────────────────────────────────────────────────────
+// HTF 1 Data - Individual requests to avoid tuple issues
+htf_high = request.security(syminfo.tickerid, i_htf_timeframe, high, lookahead=barmerge.lookahead_off)
+htf_low = request.security(syminfo.tickerid, i_htf_timeframe, low, lookahead=barmerge.lookahead_off)
+htf_close = request.security(syminfo.tickerid, i_htf_timeframe, close, lookahead=barmerge.lookahead_off)
+htf_high_2 = request.security(syminfo.tickerid, i_htf_timeframe, high[2], lookahead=barmerge.lookahead_off)
+htf_low_2 = request.security(syminfo.tickerid, i_htf_timeframe, low[2], lookahead=barmerge.lookahead_off)
+htf_bar_idx_raw = request.security(syminfo.tickerid, i_htf_timeframe, bar_index, lookahead=barmerge.lookahead_off)
+int htf_bar_idx = int(htf_bar_idx_raw)
+
+// HTF 2 Data
+htf2_high = request.security(syminfo.tickerid, i_htf_timeframe_2, high, lookahead=barmerge.lookahead_off)
+htf2_low = request.security(syminfo.tickerid, i_htf_timeframe_2, low, lookahead=barmerge.lookahead_off)
+htf2_close = request.security(syminfo.tickerid, i_htf_timeframe_2, close, lookahead=barmerge.lookahead_off)
+htf2_high_2 = request.security(syminfo.tickerid, i_htf_timeframe_2, high[2], lookahead=barmerge.lookahead_off)
+htf2_low_2 = request.security(syminfo.tickerid, i_htf_timeframe_2, low[2], lookahead=barmerge.lookahead_off)
+htf2_bar_idx_raw = request.security(syminfo.tickerid, i_htf_timeframe_2, bar_index, lookahead=barmerge.lookahead_off)
+int htf2_bar_idx = int(htf2_bar_idx_raw)
+
+// Track HTF bar changes to detect new HTF bars
+var int prev_htf_bar = na
+var int prev_htf2_bar = na
+bool htf_bar_changed = na(prev_htf_bar) or htf_bar_idx != prev_htf_bar
+bool htf2_bar_changed = na(prev_htf2_bar) or htf2_bar_idx != prev_htf2_bar
+prev_htf_bar := htf_bar_idx
+prev_htf2_bar := htf2_bar_idx
+
+// HTF ATR for sizing (calculated on HTF)
+htf_atr = request.security(syminfo.tickerid, i_htf_timeframe, ta.atr(i_fvg_atr_period), lookahead=barmerge.lookahead_off)
+htf2_atr = request.security(syminfo.tickerid, i_htf_timeframe_2, ta.atr(i_fvg_atr_period), lookahead=barmerge.lookahead_off)
+
+// ─────────────────────────────────────────────────────────────────────
+// Detect HTF Fair Value Gaps
+// ─────────────────────────────────────────────────────────────────────
+detect_htf_fvg(string tf, float h, float l, float h2, float l2, float atr_val, bool bar_changed) =>
+    FVG result = na
+
+    if i_enable_htf and bar_changed and barstate.isconfirmed and not na(atr_val)
+        min_gap = atr_val * i_fvg_min_size_mult
+
+        // Bullish FVG: current low > high[2]
+        bullish_gap_size = l - h2
+        if bullish_gap_size > min_gap
+            result := FVG.new(
+                top = l,
+                bottom = h2,
+                mid = (l + h2) / 2,
+                start_bar = bar_index - 2,  // Approximate LTF bar position
+                end_bar = bar_index,
+                is_bullish = true,
+                status = "active",
+                timeframe = tf,
+                box_id = na,
+                label_id = na
+            )
+
+        // Bearish FVG: current high < low[2]
+        bearish_gap_size = l2 - h
+        if bearish_gap_size > min_gap and na(result)
+            result := FVG.new(
+                top = l2,
+                bottom = h,
+                mid = (l2 + h) / 2,
+                start_bar = bar_index - 2,
+                end_bar = bar_index,
+                is_bullish = false,
+                status = "active",
+                timeframe = tf,
+                box_id = na,
+                label_id = na
+            )
+
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Check if HTF FVG already exists (avoid duplicates)
+// ─────────────────────────────────────────────────────────────────────
+htf_fvg_exists(array<FVG> arr, float top, float bottom, bool is_bullish) =>
+    bool exists = false
+    int arr_size = array.size(arr)
+    if arr_size > 0
+        for i = 0 to arr_size - 1
+            fvg = array.get(arr, i)
+            // Check if same zone (with small tolerance)
+            float tolerance = atr_value * 0.1
+            if fvg.is_bullish == is_bullish and
+               math.abs(fvg.top - top) < tolerance and
+               math.abs(fvg.bottom - bottom) < tolerance
+                exists := true
+                break
+    exists
+
+// ─────────────────────────────────────────────────────────────────────
+// Cleanup HTF arrays
+// ─────────────────────────────────────────────────────────────────────
+cleanup_htf_fvg_array(array<FVG> arr, int max_count) =>
+    while array.size(arr) > max_count
+        old_fvg = array.shift(arr)
+        if not na(old_fvg.box_id)
+            box.delete(old_fvg.box_id)
+        if not na(old_fvg.label_id)
+            label.delete(old_fvg.label_id)
+
+cleanup_htf_ifvg_array(array<IFVG> arr, int max_count) =>
+    while array.size(arr) > max_count
+        old_ifvg = array.shift(arr)
+        if not na(old_ifvg.box_id)
+            box.delete(old_ifvg.box_id)
+        if not na(old_ifvg.label_id)
+            label.delete(old_ifvg.label_id)
+
+// ─────────────────────────────────────────────────────────────────────
+// Check HTF FVG inversions (simplified - no full grading)
+// ─────────────────────────────────────────────────────────────────────
+check_htf_inversions(array<FVG> fvg_arr, array<IFVG> ifvg_arr, float htf_c, string tf) =>
+    int fvg_size = array.size(fvg_arr)
+    if barstate.isconfirmed and fvg_size > 0 and not na(htf_c)
+        for i = fvg_size - 1 to 0
+            if i >= 0 and i < array.size(fvg_arr)
+                fvg = array.get(fvg_arr, i)
+
+                if fvg.status == "active"
+                    fvg_age = bar_index - fvg.end_bar
+
+                    if fvg_age >= 1
+                        bool inverted = false
+
+                        // Bullish FVG Inversion: body closes below
+                        if fvg.is_bullish
+                            if htf_c < fvg.bottom
+                                inverted := true
+
+                        // Bearish FVG Inversion: body closes above
+                        else
+                            if htf_c > fvg.top
+                                inverted := true
+
+                        if inverted
+                            fvg.status := "inverted"
+
+                            // Delete FVG drawings
+                            if not na(fvg.box_id)
+                                box.delete(fvg.box_id)
+                            if not na(fvg.label_id)
+                                label.delete(fvg.label_id)
+
+                            // IFVG direction is INVERTED from FVG
+                            bool ifvg_is_bullish = not fvg.is_bullish
+
+                            // Create simplified HTF IFVG (no grading needed for bias)
+                            new_ifvg = IFVG.new(
+                                top = fvg.top,
+                                bottom = fvg.bottom,
+                                mid = fvg.mid,
+                                start_bar = fvg.start_bar,
+                                inversion_bar = bar_index,
+                                inversion_close = htf_c,
+                                is_bullish = ifvg_is_bullish,
+                                status = "inverted",
+                                grade = "HTF",  // Mark as HTF
+                                entry_valid = true,
+                                be_level = ifvg_is_bullish ? fvg.top : fvg.bottom,
+                                be_status = "intact",
+                                sl_level = ifvg_is_bullish ? fvg.bottom : fvg.top,
+                                sl_type = "fvg_boundary",
+                                dol = na,
+                                has_sweep = false,
+                                has_delivery = false,
+                                momentum = "neutral",
+                                box_id = na,
+                                label_id = na,
+                                be_line_id = na,
+                                sl_line_id = na,
+                                entry_line_id = na,
+                                entry_label_id = na
+                            )
+
+                            array.push(ifvg_arr, new_ifvg)
+
+                            // Remove from FVG array
+                            array.remove(fvg_arr, i)
+
+// ─────────────────────────────────────────────────────────────────────
+// Check HTF IFVG mitigation
+// ─────────────────────────────────────────────────────────────────────
+check_htf_mitigations(array<IFVG> ifvg_arr, float htf_c) =>
+    int ifvg_size = array.size(ifvg_arr)
+    if barstate.isconfirmed and ifvg_size > 0 and not na(htf_c)
+        for i = ifvg_size - 1 to 0
+            if i >= 0 and i < array.size(ifvg_arr)
+                ifvg = array.get(ifvg_arr, i)
+
+                if ifvg.status == "inverted"
+                    bool mitigated = false
+
+                    // Bullish IFVG mitigated: price closes below zone
+                    if ifvg.is_bullish
+                        if htf_c < ifvg.bottom
+                            mitigated := true
+
+                    // Bearish IFVG mitigated: price closes above zone
+                    else
+                        if htf_c > ifvg.top
+                            mitigated := true
+
+                    if mitigated
+                        // Delete drawings
+                        if not na(ifvg.box_id)
+                            box.delete(ifvg.box_id)
+                        if not na(ifvg.label_id)
+                            label.delete(ifvg.label_id)
+
+                        array.remove(ifvg_arr, i)
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 6: SWING POINT & LIQUIDITY DETECTION (Phase 2)
@@ -1446,9 +1699,28 @@ render_ifvg_boxes() =>
                     label.delete(ifvg.entry_label_id)
                     ifvg.entry_label_id := na
 
-                // Only render if: enabled, inverted status, meets grade, and under display limit
+                // Check HTF bias alignment (Phase 3)
+                bool htf_aligned = true
+                if i_enable_htf and i_htf_filter_ltf
+                    // Calculate bias inline from HTF IFVG arrays
+                    string htf1_b = "neutral"
+                    string htf2_b = "neutral"
+                    if array.size(g_htf_ifvg_array) > 0
+                        IFVG htf1_r = array.get(g_htf_ifvg_array, array.size(g_htf_ifvg_array) - 1)
+                        htf1_b := htf1_r.status == "inverted" ? (htf1_r.is_bullish ? "bullish" : "bearish") : "neutral"
+                    if array.size(g_htf2_ifvg_array) > 0
+                        IFVG htf2_r = array.get(g_htf2_ifvg_array, array.size(g_htf2_ifvg_array) - 1)
+                        htf2_b := htf2_r.status == "inverted" ? (htf2_r.is_bullish ? "bullish" : "bearish") : "neutral"
+                    string combined_bias = htf1_b != "neutral" ? htf1_b : htf2_b
+                    if combined_bias != "neutral"
+                        // Filter: only show LTF setups that match HTF bias
+                        htf_aligned := (combined_bias == "bullish" and ifvg.is_bullish) or
+                                      (combined_bias == "bearish" and not ifvg.is_bullish)
+
+                // Only render if: enabled, inverted status, meets grade, HTF aligned, and under display limit
                 bool should_display = i_show_ifvg and ifvg.status == "inverted" and
                                      grade_meets_minimum(ifvg.grade, i_min_grade_display) and
+                                     htf_aligned and
                                      displayed_count < i_max_recent_display
 
                 if should_display
@@ -1587,6 +1859,136 @@ render_ifvg_boxes() =>
                                 yloc = yloc.price,
                                 tooltip = tooltip_text
                             )
+
+// ─────────────────────────────────────────────────────────────────────
+// Render HTF FVG Boxes (Phase 3)
+// ─────────────────────────────────────────────────────────────────────
+render_htf_fvg_boxes(array<FVG> arr, string tf_label) =>
+    if i_enable_htf and i_show_htf_fvg
+        int arr_size = array.size(arr)
+        if arr_size > 0
+            for i = 0 to arr_size - 1
+                if i < array.size(arr)
+                    fvg = array.get(arr, i)
+
+                    if fvg.status == "active"
+                        // Delete old drawings
+                        if not na(fvg.box_id)
+                            box.delete(fvg.box_id)
+                        if not na(fvg.label_id)
+                            label.delete(fvg.label_id)
+
+                        // HTF boxes: same colors but thicker borders
+                        base_color = fvg.is_bullish ? i_bullish_color : i_bearish_color
+                        bg_color = color.new(base_color, i_htf_box_opacity)
+                        border_color = base_color
+                        right_edge = bar_index + i_extend_bars
+                        // Clamp left edge to prevent "bar index too far" error (max_bars_back = 500)
+                        int left_edge = math.max(fvg.start_bar, bar_index - 400)
+
+                        fvg.box_id := box.new(
+                            left = left_edge,
+                            top = fvg.top,
+                            right = right_edge,
+                            bottom = fvg.bottom,
+                            bgcolor = bg_color,
+                            border_color = border_color,
+                            border_width = i_htf_border_width,
+                            border_style = line.style_solid
+                        )
+
+                        // Label with timeframe indicator
+                        if i_show_labels
+                            direction_arrow = fvg.is_bullish ? " ▲" : " ▼"
+                            label_text = "[" + tf_label + "] FVG" + direction_arrow
+
+                            fvg.label_id := label.new(
+                                x = right_edge - 2,
+                                y = fvg.is_bullish ? fvg.bottom : fvg.top,
+                                text = label_text,
+                                style = label.style_none,
+                                color = color.new(color.black, 100),
+                                textcolor = border_color,
+                                size = size.small,
+                                textalign = text.align_right,
+                                yloc = yloc.price
+                            )
+
+// ─────────────────────────────────────────────────────────────────────
+// Render HTF IFVG Boxes (Phase 3)
+// ─────────────────────────────────────────────────────────────────────
+render_htf_ifvg_boxes(array<IFVG> arr, string tf_label) =>
+    if i_enable_htf and i_show_htf_ifvg
+        int arr_size = array.size(arr)
+        if arr_size > 0
+            for i = 0 to arr_size - 1
+                if i < array.size(arr)
+                    ifvg = array.get(arr, i)
+
+                    if ifvg.status == "inverted"
+                        // Delete old drawings
+                        if not na(ifvg.box_id)
+                            box.delete(ifvg.box_id)
+                        if not na(ifvg.label_id)
+                            label.delete(ifvg.label_id)
+
+                        // HTF IFVG boxes: use gray with dashed thick border
+                        bg_color = color.new(color.gray, i_htf_box_opacity)
+                        border_color = ifvg.is_bullish ? i_bullish_color : i_bearish_color
+                        right_edge = bar_index + i_extend_bars
+                        // Clamp left edge to prevent "bar index too far" error (max_bars_back = 500)
+                        int left_edge = math.max(ifvg.start_bar, bar_index - 400)
+
+                        ifvg.box_id := box.new(
+                            left = left_edge,
+                            top = ifvg.top,
+                            right = right_edge,
+                            bottom = ifvg.bottom,
+                            bgcolor = bg_color,
+                            border_color = border_color,
+                            border_width = i_htf_border_width,
+                            border_style = line.style_dashed
+                        )
+
+                        // Label with timeframe and direction
+                        if i_show_labels
+                            direction_text = ifvg.is_bullish ? "LONG" : "SHORT"
+                            label_text = "[" + tf_label + "] IFVG " + direction_text
+
+                            ifvg.label_id := label.new(
+                                x = right_edge - 2,
+                                y = ifvg.bottom,
+                                text = label_text,
+                                style = label.style_none,
+                                color = color.new(color.black, 100),
+                                textcolor = border_color,
+                                size = size.small,
+                                textalign = text.align_right,
+                                yloc = yloc.price
+                            )
+
+// ─────────────────────────────────────────────────────────────────────
+// Get timeframe display label
+// ─────────────────────────────────────────────────────────────────────
+get_tf_label(string tf) =>
+    string result = tf
+    if tf == "1"
+        result := "1m"
+    else if tf == "3"
+        result := "3m"
+    else if tf == "5"
+        result := "5m"
+    else if tf == "15"
+        result := "15m"
+    else if tf == "30"
+        result := "30m"
+    else if tf == "60"
+        result := "1H"
+    else if tf == "120"
+        result := "2H"
+    else if tf == "240"
+        result := "4H"
+    result
 
 // ─────────────────────────────────────────────────────────────────────
 // Render Liquidity Lines (Phase 2 - Enhanced with quality indicators)
@@ -1738,15 +2140,15 @@ find_most_recent_ifvg() =>
     recent
 
 // ══════════════════════════════════════════════════════════════════════
-// SECTION 11: DASHBOARD (Phase 2 Enhanced)
+// SECTION 11: DASHBOARD (Phase 3 Enhanced)
 // ══════════════════════════════════════════════════════════════════════
 
-var table dashboard = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+var table dashboard = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
 
 render_dashboard(IFVG latest_ifvg) =>
     if barstate.islast
         // Row 0: Title
-        table.cell(dashboard, 0, 0, "IFVG PRO v2.0", text_color=color.white, text_size=size.normal, text_halign=text.align_left)
+        table.cell(dashboard, 0, 0, "IFVG PRO v3.0", text_color=color.white, text_size=size.normal, text_halign=text.align_left)
         table.cell(dashboard, 1, 0, "", text_color=color.white, text_size=size.normal)
 
         // Row 1: Active FVGs
@@ -1786,6 +2188,37 @@ render_dashboard(IFVG latest_ifvg) =>
         table.cell(dashboard, 0, 7, "DOL:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
         table.cell(dashboard, 1, 7, dol_text, text_color=color.white, text_size=size.small, text_halign=text.align_right)
 
+        // Row 8: HTF Bias (Phase 3)
+        string htf_bias_text = "-"
+        color htf_bias_color = color.gray
+        if i_enable_htf
+            // Calculate bias inline from HTF IFVG arrays
+            string dash_htf1_b = "neutral"
+            string dash_htf2_b = "neutral"
+            if array.size(g_htf_ifvg_array) > 0
+                IFVG dash_htf1_r = array.get(g_htf_ifvg_array, array.size(g_htf_ifvg_array) - 1)
+                dash_htf1_b := dash_htf1_r.status == "inverted" ? (dash_htf1_r.is_bullish ? "bullish" : "bearish") : "neutral"
+            if array.size(g_htf2_ifvg_array) > 0
+                IFVG dash_htf2_r = array.get(g_htf2_ifvg_array, array.size(g_htf2_ifvg_array) - 1)
+                dash_htf2_b := dash_htf2_r.status == "inverted" ? (dash_htf2_r.is_bullish ? "bullish" : "bearish") : "neutral"
+            string combined_bias = dash_htf1_b != "neutral" ? dash_htf1_b : dash_htf2_b
+            htf_bias_text := str.upper(combined_bias)
+            if combined_bias == "bullish"
+                htf_bias_color := color.green
+            else if combined_bias == "bearish"
+                htf_bias_color := color.red
+        table.cell(dashboard, 0, 8, "HTF Bias:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+        table.cell(dashboard, 1, 8, htf_bias_text, text_color=htf_bias_color, text_size=size.small, text_halign=text.align_right)
+
+        // Row 9: HTF TF Display
+        string htf_tf_text = "-"
+        if i_enable_htf
+            htf_tf_text := get_tf_label(i_htf_timeframe)
+            if i_htf_timeframe_2 != i_htf_timeframe
+                htf_tf_text := htf_tf_text + " / " + get_tf_label(i_htf_timeframe_2)
+        table.cell(dashboard, 0, 9, "HTF:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+        table.cell(dashboard, 1, 9, htf_tf_text, text_color=color.white, text_size=size.small, text_halign=text.align_right)
+
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 12: MAIN EXECUTION LOOP
 // ══════════════════════════════════════════════════════════════════════
@@ -1810,7 +2243,7 @@ if i_show_indicator
     check_liquidity_sweeps()
 
     // ─────────────────────────────────────────────────────────────────
-    // Step 4: Detect new FVGs
+    // Step 4: Detect new LTF FVGs
     // ─────────────────────────────────────────────────────────────────
     new_fvg = detect_fvg()
     if not na(new_fvg)
@@ -1818,10 +2251,46 @@ if i_show_indicator
         cleanup_fvg_array()
 
     // ─────────────────────────────────────────────────────────────────
-    // Step 5: Check for inversions (FVG → IFVG)
+    // Step 4B: Detect HTF FVGs (Phase 3)
+    // ─────────────────────────────────────────────────────────────────
+    if i_enable_htf
+        // HTF 1 FVG Detection
+        htf1_fvg = detect_htf_fvg(i_htf_timeframe, htf_high, htf_low, htf_high_2, htf_low_2, htf_atr, htf_bar_changed)
+        if not na(htf1_fvg) and not htf_fvg_exists(g_htf_fvg_array, htf1_fvg.top, htf1_fvg.bottom, htf1_fvg.is_bullish)
+            array.push(g_htf_fvg_array, htf1_fvg)
+            cleanup_htf_fvg_array(g_htf_fvg_array, i_max_fvgs)
+
+        // HTF 2 FVG Detection (only if different from HTF 1)
+        if i_htf_timeframe_2 != i_htf_timeframe
+            htf2_fvg = detect_htf_fvg(i_htf_timeframe_2, htf2_high, htf2_low, htf2_high_2, htf2_low_2, htf2_atr, htf2_bar_changed)
+            if not na(htf2_fvg) and not htf_fvg_exists(g_htf2_fvg_array, htf2_fvg.top, htf2_fvg.bottom, htf2_fvg.is_bullish)
+                array.push(g_htf2_fvg_array, htf2_fvg)
+                cleanup_htf_fvg_array(g_htf2_fvg_array, i_max_fvgs)
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 5: Check for LTF inversions (FVG → IFVG)
     // ─────────────────────────────────────────────────────────────────
     check_inversions()
     cleanup_ifvg_array()
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 5B: Check for HTF inversions (Phase 3)
+    // ─────────────────────────────────────────────────────────────────
+    if i_enable_htf
+        check_htf_inversions(g_htf_fvg_array, g_htf_ifvg_array, htf_close, i_htf_timeframe)
+        cleanup_htf_ifvg_array(g_htf_ifvg_array, i_max_ifvgs)
+
+        if i_htf_timeframe_2 != i_htf_timeframe
+            check_htf_inversions(g_htf2_fvg_array, g_htf2_ifvg_array, htf2_close, i_htf_timeframe_2)
+            cleanup_htf_ifvg_array(g_htf2_ifvg_array, i_max_ifvgs)
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 5C: Check HTF IFVG mitigations (Phase 3)
+    // ─────────────────────────────────────────────────────────────────
+    if i_enable_htf
+        check_htf_mitigations(g_htf_ifvg_array, htf_close)
+        if i_htf_timeframe_2 != i_htf_timeframe
+            check_htf_mitigations(g_htf2_ifvg_array, htf2_close)
 
     // ─────────────────────────────────────────────────────────────────
     // Step 6: Update BE status
@@ -1848,5 +2317,20 @@ if i_show_indicator
     // ─────────────────────────────────────────────────────────────────
     render_fvg_boxes()
     render_ifvg_boxes()
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 9B: Render HTF elements (Phase 3)
+    // ─────────────────────────────────────────────────────────────────
+    if i_enable_htf
+        string htf1_label = get_tf_label(i_htf_timeframe)
+        string htf2_label = get_tf_label(i_htf_timeframe_2)
+
+        render_htf_fvg_boxes(g_htf_fvg_array, htf1_label)
+        render_htf_ifvg_boxes(g_htf_ifvg_array, htf1_label)
+
+        if i_htf_timeframe_2 != i_htf_timeframe
+            render_htf_fvg_boxes(g_htf2_fvg_array, htf2_label)
+            render_htf_ifvg_boxes(g_htf2_ifvg_array, htf2_label)
+
     render_liquidity_lines()
     render_dashboard(current_latest_ifvg)
