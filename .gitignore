@@ -31,3 +31,6 @@ build/
 
 # Claude specific
 claudedocs/
+CLAUDE.md
+.claude/
+
