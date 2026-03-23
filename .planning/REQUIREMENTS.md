@@ -65,11 +65,11 @@ Deferred to future release. Tracked but not in current roadmap.
 
 | Feature | Reason |
 |---------|--------|
-| Mobile app / web interface | TradingView-only indicator — platform handles distribution |
+| Mobile app / web interface | TradingView-only indicator -- platform handles distribution |
 | Backtesting engine | Pine Script strategy scripts are a separate tool type |
-| Real-time notifications (push/SMS) | TradingView handles alert delivery — indicator only sets conditions |
-| Reversal/Continuation model detection | Requires complex pattern recognition beyond current scope — grading captures the essence |
-| Auto-trading / order execution | Out of scope — indicator is decision support, not execution |
+| Real-time notifications (push/SMS) | TradingView handles alert delivery -- indicator only sets conditions |
+| Reversal/Continuation model detection | Requires complex pattern recognition beyond current scope -- grading captures the essence |
+| Auto-trading / order execution | Out of scope -- indicator is decision support, not execution |
 
 ## Traceability
 
@@ -77,39 +77,39 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FIX-01 | TBD | Pending |
-| FIX-02 | TBD | Pending |
-| FIX-03 | TBD | Pending |
-| PDZ-01 | TBD | Pending |
-| PDZ-02 | TBD | Pending |
-| PDZ-03 | TBD | Pending |
-| PDZ-04 | TBD | Pending |
-| PDZ-05 | TBD | Pending |
-| PDZ-06 | TBD | Pending |
-| PDZ-07 | TBD | Pending |
-| PDZ-08 | TBD | Pending |
-| SES-01 | TBD | Pending |
-| SES-02 | TBD | Pending |
-| SES-03 | TBD | Pending |
-| SES-04 | TBD | Pending |
-| SES-05 | TBD | Pending |
-| SES-06 | TBD | Pending |
-| DSH-01 | TBD | Pending |
-| DSH-02 | TBD | Pending |
-| DSH-03 | TBD | Pending |
-| DSH-04 | TBD | Pending |
-| ALT-01 | TBD | Pending |
-| ALT-02 | TBD | Pending |
-| ALT-03 | TBD | Pending |
-| ALT-04 | TBD | Pending |
-| ALT-05 | TBD | Pending |
-| ALT-06 | TBD | Pending |
+| FIX-01 | Phase 1 | Pending |
+| FIX-02 | Phase 1 | Pending |
+| FIX-03 | Phase 1 | Pending |
+| PDZ-01 | Phase 2 | Pending |
+| PDZ-02 | Phase 2 | Pending |
+| PDZ-03 | Phase 2 | Pending |
+| PDZ-04 | Phase 2 | Pending |
+| PDZ-05 | Phase 2 | Pending |
+| PDZ-06 | Phase 2 | Pending |
+| PDZ-07 | Phase 2 | Pending |
+| PDZ-08 | Phase 2 | Pending |
+| DSH-01 | Phase 2 | Pending |
+| DSH-02 | Phase 2 | Pending |
+| SES-01 | Phase 3 | Pending |
+| SES-02 | Phase 3 | Pending |
+| SES-03 | Phase 3 | Pending |
+| SES-04 | Phase 3 | Pending |
+| SES-05 | Phase 3 | Pending |
+| SES-06 | Phase 3 | Pending |
+| DSH-03 | Phase 3 | Pending |
+| DSH-04 | Phase 3 | Pending |
+| ALT-01 | Phase 4 | Pending |
+| ALT-02 | Phase 4 | Pending |
+| ALT-03 | Phase 4 | Pending |
+| ALT-04 | Phase 4 | Pending |
+| ALT-05 | Phase 4 | Pending |
+| ALT-06 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 27 total
-- Mapped to phases: 0
-- Unmapped: 27 ⚠️
+- Mapped to phases: 27
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-23*
-*Last updated: 2026-03-23 after initial definition*
+*Last updated: 2026-03-23 after roadmap creation*
