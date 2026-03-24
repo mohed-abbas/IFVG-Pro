@@ -595,6 +595,22 @@ was_liquidity_swept_between(int bar1_idx, int bar2_idx, float ref_level, bool ch
                         break
     swept
 
+// ─────────────────────────────────────────────────────────────────────
+// Get combined HTF bias from HTF IFVG arrays
+// Returns "bullish", "bearish", or "neutral"
+// ─────────────────────────────────────────────────────────────────────
+get_htf_bias() =>
+    string htf1_b = "neutral"
+    string htf2_b = "neutral"
+    if array.size(g_htf_ifvg_array) > 0
+        IFVG htf1_r = array.get(g_htf_ifvg_array, array.size(g_htf_ifvg_array) - 1)
+        htf1_b := htf1_r.status == "inverted" ? (htf1_r.is_bullish ? "bullish" : "bearish") : "neutral"
+    if array.size(g_htf2_ifvg_array) > 0
+        IFVG htf2_r = array.get(g_htf2_ifvg_array, array.size(g_htf2_ifvg_array) - 1)
+        htf2_b := htf2_r.status == "inverted" ? (htf2_r.is_bullish ? "bullish" : "bearish") : "neutral"
+    string result = htf1_b != "neutral" ? htf1_b : htf2_b
+    result
+
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 5: FVG DETECTION
 // ══════════════════════════════════════════════════════════════════════
@@ -1828,16 +1844,7 @@ render_ifvg_boxes() =>
                 // Check HTF bias alignment (Phase 3)
                 bool htf_aligned = true
                 if i_enable_htf and i_htf_filter_ltf
-                    // Calculate bias inline from HTF IFVG arrays
-                    string htf1_b = "neutral"
-                    string htf2_b = "neutral"
-                    if array.size(g_htf_ifvg_array) > 0
-                        IFVG htf1_r = array.get(g_htf_ifvg_array, array.size(g_htf_ifvg_array) - 1)
-                        htf1_b := htf1_r.status == "inverted" ? (htf1_r.is_bullish ? "bullish" : "bearish") : "neutral"
-                    if array.size(g_htf2_ifvg_array) > 0
-                        IFVG htf2_r = array.get(g_htf2_ifvg_array, array.size(g_htf2_ifvg_array) - 1)
-                        htf2_b := htf2_r.status == "inverted" ? (htf2_r.is_bullish ? "bullish" : "bearish") : "neutral"
-                    string combined_bias = htf1_b != "neutral" ? htf1_b : htf2_b
+                    string combined_bias = get_htf_bias()
                     if combined_bias != "neutral"
                         // Filter: only show LTF setups that match HTF bias
                         htf_aligned := (combined_bias == "bullish" and ifvg.is_bullish) or
@@ -2351,16 +2358,7 @@ render_dashboard(IFVG latest_ifvg) =>
         string htf_bias_text = "-"
         color htf_bias_color = color.gray
         if i_enable_htf
-            // Calculate bias inline from HTF IFVG arrays
-            string dash_htf1_b = "neutral"
-            string dash_htf2_b = "neutral"
-            if array.size(g_htf_ifvg_array) > 0
-                IFVG dash_htf1_r = array.get(g_htf_ifvg_array, array.size(g_htf_ifvg_array) - 1)
-                dash_htf1_b := dash_htf1_r.status == "inverted" ? (dash_htf1_r.is_bullish ? "bullish" : "bearish") : "neutral"
-            if array.size(g_htf2_ifvg_array) > 0
-                IFVG dash_htf2_r = array.get(g_htf2_ifvg_array, array.size(g_htf2_ifvg_array) - 1)
-                dash_htf2_b := dash_htf2_r.status == "inverted" ? (dash_htf2_r.is_bullish ? "bullish" : "bearish") : "neutral"
-            string combined_bias = dash_htf1_b != "neutral" ? dash_htf1_b : dash_htf2_b
+            string combined_bias = get_htf_bias()
             htf_bias_text := str.upper(combined_bias)
             if combined_bias == "bullish"
                 htf_bias_color := color.green
