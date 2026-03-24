@@ -86,6 +86,7 @@ type DeliveryFVG
     int end_bar         // Bar index where FVG ended (candle 3)
     bool is_bullish     // Direction
     bool was_traversed  // Price has passed through this zone
+    string timeframe    // Source timeframe ("15", "60", "240", etc.)
 
 // Type: Inverted Fair Value Gap (Extended for Phase 2)
 type IFVG
@@ -106,6 +107,11 @@ type IFVG
     Liquidity dol       // Draw on Liquidity (target)
     bool has_sweep      // Liquidity sweep present
     bool has_delivery   // Delivery from another FVG
+    string delivery_tf  // Timeframe of delivery FVG ("15", "60", etc.)
+    float delivery_top  // Delivery FVG upper boundary (for highlight box)
+    float delivery_bottom // Delivery FVG lower boundary (for highlight box)
+    int delivery_start_bar // Delivery FVG start bar
+    int delivery_end_bar // Delivery FVG end bar
     string momentum     // "strong_no_chop", "neutral", "weak_or_choppy"
     box box_id          // Reference to drawn box
     label label_id      // Reference to IFVG label (tiny "IFVG" text)
@@ -113,6 +119,7 @@ type IFVG
     line sl_line_id     // Reference to SL line
     line entry_line_id  // Reference to entry line (at inversion close)
     label entry_label_id // Reference to entry line label (grade + direction)
+    box delivery_box_id // Reference to delivery FVG highlight box
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 2: INPUT CONFIGURATION
@@ -224,6 +231,12 @@ i_delivery_lookback = input.int(50, "Delivery Lookback (bars)", minval=10, maxva
                       tooltip="How many bars back to search for delivery FVGs")
 i_delivery_body_only = input.bool(true, "Require Body Respect", group=GROUP_DELIVERY,
                       tooltip="If true, candle bodies must touch delivery FVG. If false, wicks count too.")
+i_show_delivery_box = input.bool(true, "Highlight Delivery FVG", group=GROUP_DELIVERY,
+                      tooltip="Draw a highlighted box showing the FVG that provided delivery")
+i_delivery_color    = input.color(color.new(#FF9800, 0), "Delivery Highlight Color", group=GROUP_DELIVERY,
+                      tooltip="Color for the delivery FVG highlight box (orange by default)")
+i_delivery_opacity  = input.int(70, "Delivery Box Opacity (%)", minval=50, maxval=90, group=GROUP_DELIVERY,
+                      tooltip="Transparency for delivery highlight box")
 
 // ─────────────────────────────────────────────────────────────────────
 // Visual Settings
@@ -394,6 +407,8 @@ cleanup_ifvg_array() =>
             line.delete(old_ifvg.entry_line_id)
         if not na(old_ifvg.entry_label_id)
             label.delete(old_ifvg.entry_label_id)
+        if not na(old_ifvg.delivery_box_id)
+            box.delete(old_ifvg.delivery_box_id)
 
 cleanup_liquidity_array() =>
     while array.size(g_liquidity_array) > i_max_liquidity
@@ -408,7 +423,7 @@ cleanup_liquidity_array() =>
 // ─────────────────────────────────────────────────────────────────────
 
 // Record FVG for delivery tracking (called when new FVG detected)
-record_fvg_for_delivery(FVG fvg) =>
+record_fvg_for_delivery(FVG fvg, string tf) =>
     if i_enable_delivery
         new_record = DeliveryFVG.new(
             top = fvg.top,
@@ -416,7 +431,8 @@ record_fvg_for_delivery(FVG fvg) =>
             start_bar = fvg.start_bar,
             end_bar = fvg.end_bar,
             is_bullish = fvg.is_bullish,
-            was_traversed = false
+            was_traversed = false,
+            timeframe = tf
         )
         array.push(g_delivery_history, new_record)
 
@@ -460,18 +476,16 @@ update_delivery_traversal() =>
 // Parameters:
 //   ifvg_is_bullish - Direction of the IFVG (not the source FVG)
 //   source_fvg_start_bar - When the source FVG formed
-// Returns: true if valid delivery exists
+// Returns: DeliveryFVG record if valid delivery exists, na if not
 check_delivery(bool ifvg_is_bullish, int source_fvg_start_bar) =>
-    bool result = false
+    DeliveryFVG result = na
 
-    if not i_enable_delivery
-        result := false
-    else
+    if i_enable_delivery
         int history_size = array.size(g_delivery_history)
 
         if history_size > 0
             for i = 0 to history_size - 1
-                if i < history_size and not result
+                if i < history_size and na(result)
                     record = array.get(g_delivery_history, i)
 
                     // 1. Direction must match IFVG direction
@@ -489,7 +503,7 @@ check_delivery(bool ifvg_is_bullish, int source_fvg_start_bar) =>
                     bool was_traversed = record.was_traversed
 
                     if direction_matches and formed_before and within_lookback and was_traversed
-                        result := true
+                        result := record
                         break
 
     result
@@ -635,22 +649,19 @@ detect_fvg() =>
 // ─────────────────────────────────────────────────────────────────────
 // Get HTF OHLC data via request.security
 // ─────────────────────────────────────────────────────────────────────
-// HTF 1 Data - Individual requests to avoid tuple issues
-htf_high = request.security(syminfo.tickerid, i_htf_timeframe, high, lookahead=barmerge.lookahead_off)
-htf_low = request.security(syminfo.tickerid, i_htf_timeframe, low, lookahead=barmerge.lookahead_off)
-htf_close = request.security(syminfo.tickerid, i_htf_timeframe, close, lookahead=barmerge.lookahead_off)
-htf_high_2 = request.security(syminfo.tickerid, i_htf_timeframe, high[2], lookahead=barmerge.lookahead_off)
-htf_low_2 = request.security(syminfo.tickerid, i_htf_timeframe, low[2], lookahead=barmerge.lookahead_off)
-htf_bar_idx_raw = request.security(syminfo.tickerid, i_htf_timeframe, bar_index, lookahead=barmerge.lookahead_off)
+// request.security budget: 2 calls used, 14 tuple elements / 127 max
+// HTF 1 Data - Consolidated tuple (7 elements)
+[htf_high, htf_low, htf_close, htf_high_2, htf_low_2, htf_bar_idx_raw, htf_atr] =
+    request.security(syminfo.tickerid, i_htf_timeframe,
+        [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period)],
+        lookahead = barmerge.lookahead_off)
 int htf_bar_idx = int(htf_bar_idx_raw)
 
-// HTF 2 Data
-htf2_high = request.security(syminfo.tickerid, i_htf_timeframe_2, high, lookahead=barmerge.lookahead_off)
-htf2_low = request.security(syminfo.tickerid, i_htf_timeframe_2, low, lookahead=barmerge.lookahead_off)
-htf2_close = request.security(syminfo.tickerid, i_htf_timeframe_2, close, lookahead=barmerge.lookahead_off)
-htf2_high_2 = request.security(syminfo.tickerid, i_htf_timeframe_2, high[2], lookahead=barmerge.lookahead_off)
-htf2_low_2 = request.security(syminfo.tickerid, i_htf_timeframe_2, low[2], lookahead=barmerge.lookahead_off)
-htf2_bar_idx_raw = request.security(syminfo.tickerid, i_htf_timeframe_2, bar_index, lookahead=barmerge.lookahead_off)
+// HTF 2 Data - Consolidated tuple (7 elements)
+[htf2_high, htf2_low, htf2_close, htf2_high_2, htf2_low_2, htf2_bar_idx_raw, htf2_atr] =
+    request.security(syminfo.tickerid, i_htf_timeframe_2,
+        [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period)],
+        lookahead = barmerge.lookahead_off)
 int htf2_bar_idx = int(htf2_bar_idx_raw)
 
 // Track HTF bar changes to detect new HTF bars
@@ -660,10 +671,6 @@ bool htf_bar_changed = na(prev_htf_bar) or htf_bar_idx != prev_htf_bar
 bool htf2_bar_changed = na(prev_htf2_bar) or htf2_bar_idx != prev_htf2_bar
 prev_htf_bar := htf_bar_idx
 prev_htf2_bar := htf2_bar_idx
-
-// HTF ATR for sizing (calculated on HTF)
-htf_atr = request.security(syminfo.tickerid, i_htf_timeframe, ta.atr(i_fvg_atr_period), lookahead=barmerge.lookahead_off)
-htf2_atr = request.security(syminfo.tickerid, i_htf_timeframe_2, ta.atr(i_fvg_atr_period), lookahead=barmerge.lookahead_off)
 
 // ─────────────────────────────────────────────────────────────────────
 // Detect HTF Fair Value Gaps
@@ -1381,7 +1388,7 @@ calculate_stop_loss(bool is_bullish, float ifvg_bottom, float ifvg_top, float in
 // ─────────────────────────────────────────────────────────────────────
 // Full grading algorithm
 // ─────────────────────────────────────────────────────────────────────
-calculate_grade(bool has_sweep, bool has_delivery, string momentum, bool has_dol, bool in_optimal_zone, bool in_wrong_zone, bool fvg_singular) =>
+calculate_grade(bool has_sweep, bool has_delivery, string momentum, bool has_dol, bool fvg_singular) =>
     string result = "C"
 
     // ═══════════════════════════════════════════════════════════
@@ -1414,12 +1421,6 @@ calculate_grade(bool has_sweep, bool has_delivery, string momentum, bool has_dol
         else if momentum == "weak_or_choppy"
             quality_score := quality_score - 1
 
-        // Premium/Discount (+1 / -1)
-        if in_optimal_zone
-            quality_score := quality_score + 1
-        else if in_wrong_zone
-            quality_score := quality_score - 1
-
         // FVG Clarity (+1 / -1)
         if fvg_singular
             quality_score := quality_score + 1
@@ -1435,16 +1436,16 @@ calculate_grade(bool has_sweep, bool has_delivery, string momentum, bool has_dol
         // ═══════════════════════════════════════════════════════
 
         if tier == "A"
-            if quality_score >= 3
+            if quality_score >= 2
                 result := "A+"
             else if quality_score >= 1
                 result := "A"
-            else if quality_score >= -1
+            else if quality_score >= 0
                 result := "A-"
             else
                 result := "B+"
         else if tier == "B"
-            if quality_score >= 2
+            if quality_score >= 1
                 result := "B+"
             else if quality_score >= 0
                 result := "B"
@@ -1577,14 +1578,17 @@ check_inversions() =>
 
                             // Calculate grade
                             // Check if price was delivered from a prior same-direction FVG
-                            bool has_delivery = check_delivery(ifvg_is_bullish, fvg.start_bar)
-                            bool in_optimal_zone = true  // Will be calculated in Phase 4 with PD zones
-                            bool in_wrong_zone = false
+                            DeliveryFVG delivery_record = check_delivery(ifvg_is_bullish, fvg.start_bar)
+                            bool has_delivery = not na(delivery_record)
+                            string delivery_tf = has_delivery ? delivery_record.timeframe : ""
+                            float delivery_top = has_delivery ? delivery_record.top : na
+                            float delivery_bottom = has_delivery ? delivery_record.bottom : na
+                            int delivery_start = has_delivery ? delivery_record.start_bar : na
+                            int delivery_end = has_delivery ? delivery_record.end_bar : na
                             bool fvg_singular = true  // Assuming singular for now
 
                             string grade = calculate_grade(
-                                has_sweep, has_delivery, momentum, has_dol,
-                                in_optimal_zone, in_wrong_zone, fvg_singular
+                                has_sweep, has_delivery, momentum, has_dol, fvg_singular
                             )
 
                             // Create IFVG
@@ -1606,13 +1610,19 @@ check_inversions() =>
                                 dol = dol,
                                 has_sweep = has_sweep,
                                 has_delivery = has_delivery,
+                                delivery_tf = delivery_tf,
+                                delivery_top = delivery_top,
+                                delivery_bottom = delivery_bottom,
+                                delivery_start_bar = delivery_start,
+                                delivery_end_bar = delivery_end,
                                 momentum = momentum,
                                 box_id = na,
                                 label_id = na,
                                 be_line_id = na,
                                 sl_line_id = na,
                                 entry_line_id = na,
-                                entry_label_id = na
+                                entry_label_id = na,
+                                delivery_box_id = na
                             )
 
                             array.push(g_ifvg_array, new_ifvg)
@@ -1723,6 +1733,8 @@ check_mitigations() =>
                             line.delete(ifvg.entry_line_id)
                         if not na(ifvg.entry_label_id)
                             label.delete(ifvg.entry_label_id)
+                        if not na(ifvg.delivery_box_id)
+                            box.delete(ifvg.delivery_box_id)
 
                         array.remove(g_ifvg_array, i)
                         mitigation_count += 1
@@ -1942,6 +1954,7 @@ render_ifvg_boxes() =>
                             // Build tooltip with grade breakdown
                             sweep_check = ifvg.has_sweep ? "☑" : "☐"
                             delivery_check = ifvg.has_delivery ? "☑" : "☐"
+                            delivery_tf_text = ifvg.has_delivery ? " (" + ifvg.delivery_tf + ")" : ""
                             momentum_text = ifvg.momentum == "strong_no_chop" ? "Strong" : (ifvg.momentum == "weak_or_choppy" ? "Weak" : "Neutral")
                             momentum_check = ifvg.momentum == "strong_no_chop" ? "☑" : "☐"
                             dol_text = not na(ifvg.dol) ? (ifvg.dol.liq_type + " @ " + str.tostring(ifvg.dol.level, format.mintick)) : "None"
@@ -1951,7 +1964,7 @@ render_ifvg_boxes() =>
                             tooltip_text = "Grade: " + ifvg.grade + "\n" +
                                           "─────────────\n" +
                                           sweep_check + " Sweep\n" +
-                                          delivery_check + " PDA Delivery\n" +
+                                          delivery_check + " PDA Delivery" + delivery_tf_text + "\n" +
                                           momentum_check + " Momentum: " + momentum_text + "\n" +
                                           dol_check + " DOL: " + dol_text + "\n" +
                                           "─────────────\n" +
@@ -1973,6 +1986,38 @@ render_ifvg_boxes() =>
                                 yloc = yloc.price,
                                 tooltip = tooltip_text
                             )
+
+                    // ═══════════════════════════════════════════════════════════
+                    // Draw Delivery FVG Highlight Box
+                    // Shows the FVG that provided delivery for this IFVG
+                    // ═══════════════════════════════════════════════════════════
+                    if i_show_delivery_box and ifvg.has_delivery and not na(ifvg.delivery_top)
+                        // Delete old delivery box if exists
+                        if not na(ifvg.delivery_box_id)
+                            box.delete(ifvg.delivery_box_id)
+
+                        // Clamp left edge to prevent "bar index too far" error
+                        int delivery_left = math.max(ifvg.delivery_start_bar, bar_index - 400)
+                        int delivery_right = math.max(ifvg.delivery_end_bar, bar_index - 400)
+
+                        // Draw delivery highlight box
+                        delivery_bg_color = color.new(i_delivery_color, i_delivery_opacity)
+
+                        ifvg.delivery_box_id := box.new(
+                            left = delivery_left,
+                            top = ifvg.delivery_top,
+                            right = delivery_right,
+                            bottom = ifvg.delivery_bottom,
+                            bgcolor = delivery_bg_color,
+                            border_color = i_delivery_color,
+                            border_width = 2,
+                            border_style = line.style_dashed,
+                            text = "DLVR (" + ifvg.delivery_tf + ")",
+                            text_size = size.tiny,
+                            text_color = i_delivery_color,
+                            text_halign = text.align_center,
+                            text_valign = text.align_center
+                        )
 
 // ─────────────────────────────────────────────────────────────────────
 // Render HTF FVG Boxes (Phase 3)
@@ -2362,7 +2407,7 @@ if i_show_indicator
     new_fvg = detect_fvg()
     if not na(new_fvg)
         array.push(g_fvg_array, new_fvg)
-        record_fvg_for_delivery(new_fvg)  // Record for delivery detection
+        record_fvg_for_delivery(new_fvg, timeframe.period)  // Record for delivery detection
         cleanup_fvg_array()
 
     // ─────────────────────────────────────────────────────────────────
@@ -2379,7 +2424,7 @@ if i_show_indicator
         htf1_fvg = detect_htf_fvg(i_htf_timeframe, htf_high, htf_low, htf_high_2, htf_low_2, htf_atr, htf_bar_changed)
         if not na(htf1_fvg) and not htf_fvg_exists(g_htf_fvg_array, htf1_fvg.top, htf1_fvg.bottom, htf1_fvg.is_bullish)
             array.push(g_htf_fvg_array, htf1_fvg)
-            record_fvg_for_delivery(htf1_fvg)  // Record HTF FVG for delivery detection
+            record_fvg_for_delivery(htf1_fvg, i_htf_timeframe)  // Record HTF FVG for delivery detection
             cleanup_htf_fvg_array(g_htf_fvg_array, i_max_fvgs)
 
         // HTF 2 FVG Detection (only if different from HTF 1)
@@ -2387,7 +2432,7 @@ if i_show_indicator
             htf2_fvg = detect_htf_fvg(i_htf_timeframe_2, htf2_high, htf2_low, htf2_high_2, htf2_low_2, htf2_atr, htf2_bar_changed)
             if not na(htf2_fvg) and not htf_fvg_exists(g_htf2_fvg_array, htf2_fvg.top, htf2_fvg.bottom, htf2_fvg.is_bullish)
                 array.push(g_htf2_fvg_array, htf2_fvg)
-                record_fvg_for_delivery(htf2_fvg)  // Record HTF FVG for delivery detection
+                record_fvg_for_delivery(htf2_fvg, i_htf_timeframe_2)  // Record HTF FVG for delivery detection
                 cleanup_htf_fvg_array(g_htf2_fvg_array, i_max_fvgs)
 
     // ─────────────────────────────────────────────────────────────────
