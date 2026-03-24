@@ -28,11 +28,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. HTF bias calculation exists in exactly one function, called from both render paths -- no duplicated logic
   3. The indicator uses 3 or fewer request.security() calls total (down from 16), freeing 37+ slots for future use
   4. All existing visual behavior is unchanged -- no regressions in FVG/IFVG rendering or HTF overlays
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 01-01: TBD
-- [ ] 01-02: TBD
+- [ ] 01-01-PLAN.md -- Consolidate request.security() calls into 2 tuples and extract shared get_htf_bias() function
+- [ ] 01-02-PLAN.md -- Implement FVG singularity detection algorithm and verify all fixes on TradingView
 
 ### Phase 2: PD Zone Detection & Grading Integration
 **Goal**: Traders can see where price sits within the HTF dealing range, and zone positioning feeds into setup grading
@@ -93,7 +93,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Bug Fixes & Security Consolidation | 0/0 | Not started | - |
+| 1. Bug Fixes & Security Consolidation | 0/2 | Planned | - |
 | 2. PD Zone Detection & Grading Integration | 0/0 | Not started | - |
 | 3. Session Tracking & Visualization | 0/0 | Not started | - |
 | 4. Alert System | 0/0 | Not started | - |
