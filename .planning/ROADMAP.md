@@ -31,7 +31,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 2 plans
 
 Plans:
-- [ ] 01-01-PLAN.md -- Consolidate request.security() calls into 2 tuples and extract shared get_htf_bias() function
+- [x] 01-01-PLAN.md -- Consolidate request.security() calls into 2 tuples and extract shared get_htf_bias() function
 - [ ] 01-02-PLAN.md -- Implement FVG singularity detection algorithm and verify all fixes on TradingView
 
 ### Phase 2: PD Zone Detection & Grading Integration

@@ -10,8 +10,8 @@ Requirements for the current milestone. Each maps to roadmap phases.
 ### Bug Fixes & Optimization
 
 - [ ] **FIX-01**: Fix hardcoded `fvg_singular = true` that inflates all quality scores by +1
-- [ ] **FIX-02**: Extract duplicated HTF bias calculation logic into a shared function
-- [ ] **FIX-03**: Consolidate request.security() calls into tuple syntax (16→2 calls, freeing 14 budget slots)
+- [x] **FIX-02**: Extract duplicated HTF bias calculation logic into a shared function
+- [x] **FIX-03**: Consolidate request.security() calls into tuple syntax (16→2 calls, freeing 14 budget slots)
 
 ### Premium/Discount Zones
 
@@ -78,8 +78,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | FIX-01 | Phase 1 | Pending |
-| FIX-02 | Phase 1 | Pending |
-| FIX-03 | Phase 1 | Pending |
+| FIX-02 | Phase 1 | Complete |
+| FIX-03 | Phase 1 | Complete |
 | PDZ-01 | Phase 2 | Pending |
 | PDZ-02 | Phase 2 | Pending |
 | PDZ-03 | Phase 2 | Pending |
