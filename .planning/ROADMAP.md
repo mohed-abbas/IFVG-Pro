@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 Plans:
 - [x] 01-01-PLAN.md -- Consolidate request.security() calls into 2 tuples and extract shared get_htf_bias() function
-- [ ] 01-02-PLAN.md -- Implement FVG singularity detection algorithm and verify all fixes on TradingView
+- [x] 01-02-PLAN.md -- Implement FVG singularity detection algorithm and verify all fixes on TradingView
 
 ### Phase 2: PD Zone Detection & Grading Integration
 **Goal**: Traders can see where price sits within the HTF dealing range, and zone positioning feeds into setup grading
