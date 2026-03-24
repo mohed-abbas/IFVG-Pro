@@ -1402,6 +1402,48 @@ calculate_stop_loss(bool is_bullish, float ifvg_bottom, float ifvg_top, float in
     result
 
 // ─────────────────────────────────────────────────────────────────────
+// Check if an FVG is singular (no same-direction FVG nearby AND overlapping)
+// Per strategy: singular FVGs are higher quality than clustered ones
+// Both checks must fail for the FVG to be non-singular (per D-01)
+// ─────────────────────────────────────────────────────────────────────
+is_fvg_singular(FVG source_fvg) =>
+    bool singular = true
+    int fvg_count = array.size(g_fvg_array)
+
+    if fvg_count > 1 and not na(atr_value)
+        for j = 0 to fvg_count - 1
+            FVG other = array.get(g_fvg_array, j)
+
+            // Skip self -- compare start_bar AND end_bar to identify same FVG
+            if other.start_bar == source_fvg.start_bar and other.end_bar == source_fvg.end_bar
+                continue
+
+            // Skip opposite-direction FVGs
+            if other.is_bullish != source_fvg.is_bullish
+                continue
+
+            // Skip non-active FVGs
+            if other.status != "active"
+                continue
+
+            // CHECK 1: Proximity -- is another same-direction FVG within 5 bars?
+            int bar_distance = math.abs(source_fvg.end_bar - other.end_bar)
+            bool too_close = bar_distance <= 5
+
+            // CHECK 2: Overlap -- do zones overlap or nearly overlap?
+            // Uses ATR * 0.1 tolerance, consistent with EQH/EQL relative tolerance
+            float overlap_tolerance = atr_value * 0.1
+            bool zones_overlap = source_fvg.top + overlap_tolerance >= other.bottom and
+                                source_fvg.bottom - overlap_tolerance <= other.top
+
+            // Both checks must PASS (be problematic) to mark as non-singular
+            if too_close and zones_overlap
+                singular := false
+                break
+
+    singular
+
+// ─────────────────────────────────────────────────────────────────────
 // Full grading algorithm
 // ─────────────────────────────────────────────────────────────────────
 calculate_grade(bool has_sweep, bool has_delivery, string momentum, bool has_dol, bool fvg_singular) =>
@@ -1601,7 +1643,7 @@ check_inversions() =>
                             float delivery_bottom = has_delivery ? delivery_record.bottom : na
                             int delivery_start = has_delivery ? delivery_record.start_bar : na
                             int delivery_end = has_delivery ? delivery_record.end_bar : na
-                            bool fvg_singular = true  // Assuming singular for now
+                            bool fvg_singular = is_fvg_singular(fvg)
 
                             string grade = calculate_grade(
                                 has_sweep, has_delivery, momentum, has_dol, fvg_singular
