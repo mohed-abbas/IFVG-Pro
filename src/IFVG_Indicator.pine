@@ -620,43 +620,29 @@ get_htf_bias() =>
 merge_with_existing_fvg(FVG new_fvg) =>
     bool merged = false
     int fvg_count = array.size(g_fvg_array)
-
     if fvg_count > 0
-        // Search from newest to oldest for a same-direction active FVG within 5 bars
         for j = fvg_count - 1 to 0
             FVG existing = array.get(g_fvg_array, j)
-
-            // Must be same direction and active
-            if existing.is_bullish != new_fvg.is_bullish
-                continue
-            if existing.status != "active"
-                continue
-
-            // Must be within 5 bars (same leg proximity)
-            int bar_distance = math.abs(new_fvg.end_bar - existing.end_bar)
-            if bar_distance > 5
-                continue
-
-            // Merge: extend existing FVG to encompass new one
-            float combined_top = math.max(existing.top, new_fvg.top)
-            float combined_bottom = math.min(existing.bottom, new_fvg.bottom)
-
-            existing.top := combined_top
-            existing.bottom := combined_bottom
-            existing.mid := (combined_top + combined_bottom) / 2
-            existing.end_bar := math.max(existing.end_bar, new_fvg.end_bar)
-
-            // Redraw the box to reflect combined zone
-            if not na(existing.box_id)
-                box.delete(existing.box_id)
-                existing.box_id := na
-            if not na(existing.label_id)
-                label.delete(existing.label_id)
-                existing.label_id := na
-
-            merged := true
-            break
-
+            // Same direction, active, within 5 bars
+            if existing.is_bullish == new_fvg.is_bullish and existing.status == "active"
+                int bar_distance = int(math.abs(new_fvg.end_bar - existing.end_bar))
+                if bar_distance <= 5
+                    // Merge: extend existing FVG to encompass new one
+                    float combined_top = math.max(existing.top, new_fvg.top)
+                    float combined_bottom = math.min(existing.bottom, new_fvg.bottom)
+                    existing.top := combined_top
+                    existing.bottom := combined_bottom
+                    existing.mid := (combined_top + combined_bottom) / 2
+                    existing.end_bar := int(math.max(existing.end_bar, new_fvg.end_bar))
+                    // Redraw the box to reflect combined zone
+                    if not na(existing.box_id)
+                        box.delete(existing.box_id)
+                        existing.box_id := na
+                    if not na(existing.label_id)
+                        label.delete(existing.label_id)
+                        existing.label_id := na
+                    merged := true
+                    break
     merged
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1457,38 +1443,24 @@ calculate_stop_loss(bool is_bullish, float ifvg_bottom, float ifvg_top, float in
 is_fvg_singular(FVG source_fvg) =>
     bool singular = true
     int fvg_count = array.size(g_fvg_array)
-
     if fvg_count > 1 and not na(atr_value)
         for j = 0 to fvg_count - 1
             FVG other = array.get(g_fvg_array, j)
-
-            // Skip self -- compare start_bar AND end_bar to identify same FVG
-            if other.start_bar == source_fvg.start_bar and other.end_bar == source_fvg.end_bar
-                continue
-
-            // Skip opposite-direction FVGs
-            if other.is_bullish != source_fvg.is_bullish
-                continue
-
-            // Skip non-active FVGs
-            if other.status != "active"
-                continue
-
-            // CHECK 1: Proximity -- is another same-direction FVG within 5 bars?
-            int bar_distance = math.abs(source_fvg.end_bar - other.end_bar)
-            bool too_close = bar_distance <= 5
-
-            // CHECK 2: Overlap -- do zones overlap or nearly overlap?
-            // Uses ATR * 0.1 tolerance, consistent with EQH/EQL relative tolerance
-            float overlap_tolerance = atr_value * 0.1
-            bool zones_overlap = source_fvg.top + overlap_tolerance >= other.bottom and
-                                source_fvg.bottom - overlap_tolerance <= other.top
-
-            // Both checks must PASS (be problematic) to mark as non-singular
-            if too_close and zones_overlap
-                singular := false
-                break
-
+            // Skip self, opposite direction, and non-active
+            bool is_self = (other.start_bar == source_fvg.start_bar and other.end_bar == source_fvg.end_bar)
+            bool same_dir = (other.is_bullish == source_fvg.is_bullish)
+            bool is_active = (other.status == "active")
+            if not is_self and same_dir and is_active
+                // CHECK 1: Proximity -- within 5 bars?
+                int bar_distance = int(math.abs(source_fvg.end_bar - other.end_bar))
+                bool too_close = bar_distance <= 5
+                // CHECK 2: Overlap -- zones overlap or nearly overlap? (ATR * 0.1 tolerance)
+                float overlap_tolerance = atr_value * 0.1
+                bool zones_overlap = (source_fvg.top + overlap_tolerance >= other.bottom) and (source_fvg.bottom - overlap_tolerance <= other.top)
+                // Both must be true to mark as non-singular
+                if too_close and zones_overlap
+                    singular := false
+                    break
     singular
 
 // ─────────────────────────────────────────────────────────────────────
