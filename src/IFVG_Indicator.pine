@@ -611,6 +611,54 @@ get_htf_bias() =>
     string result = htf1_b != "neutral" ? htf1_b : htf2_b
     result
 
+// ─────────────────────────────────────────────────────────────────────
+// Merge a new FVG with an existing same-direction FVG if within the same leg
+// Per strategy (Section 7.1): combine series of gaps into one zone,
+// wait for all to be inverted before grading
+// Returns true if merged (new FVG absorbed into existing), false if standalone
+// ─────────────────────────────────────────────────────────────────────
+merge_with_existing_fvg(FVG new_fvg) =>
+    bool merged = false
+    int fvg_count = array.size(g_fvg_array)
+
+    if fvg_count > 0
+        // Search from newest to oldest for a same-direction active FVG within 5 bars
+        for j = fvg_count - 1 to 0
+            FVG existing = array.get(g_fvg_array, j)
+
+            // Must be same direction and active
+            if existing.is_bullish != new_fvg.is_bullish
+                continue
+            if existing.status != "active"
+                continue
+
+            // Must be within 5 bars (same leg proximity)
+            int bar_distance = math.abs(new_fvg.end_bar - existing.end_bar)
+            if bar_distance > 5
+                continue
+
+            // Merge: extend existing FVG to encompass new one
+            float combined_top = math.max(existing.top, new_fvg.top)
+            float combined_bottom = math.min(existing.bottom, new_fvg.bottom)
+
+            existing.top := combined_top
+            existing.bottom := combined_bottom
+            existing.mid := (combined_top + combined_bottom) / 2
+            existing.end_bar := math.max(existing.end_bar, new_fvg.end_bar)
+
+            // Redraw the box to reflect combined zone
+            if not na(existing.box_id)
+                box.delete(existing.box_id)
+                existing.box_id := na
+            if not na(existing.label_id)
+                label.delete(existing.label_id)
+                existing.label_id := na
+
+            merged := true
+            break
+
+    merged
+
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 5: FVG DETECTION
 // ══════════════════════════════════════════════════════════════════════
@@ -2446,7 +2494,10 @@ if i_show_indicator
     // ─────────────────────────────────────────────────────────────────
     new_fvg = detect_fvg()
     if not na(new_fvg)
-        array.push(g_fvg_array, new_fvg)
+        // Series of gaps: try to merge with existing same-direction FVG in same leg
+        bool was_merged = merge_with_existing_fvg(new_fvg)
+        if not was_merged
+            array.push(g_fvg_array, new_fvg)
         record_fvg_for_delivery(new_fvg, timeframe.period)  // Record for delivery detection
         cleanup_fvg_array()
 
