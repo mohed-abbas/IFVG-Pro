@@ -92,6 +92,7 @@ These cause "end of line without line continuation" errors if violated:
 3. **Cast `math.abs()` and `math.max()`/`math.min()` to `int()` when assigning to int fields.** These return `float` in v6. Use `int(math.abs(...))` not `int x = math.abs(...)`.
 4. **Prefer nested `if` blocks over `continue` for skip logic in loops.** While `continue` works, nested conditions avoid parser edge cases and are more readable.
 5. **Never split a single expression across lines without an operator at the end of the first line.** The operator (`and`, `or`, `+`, etc.) must be the LAST token before the newline.
+6. **Never leave `=` as the last token on a line.** The right-hand expression MUST start on the same line as `=`. For long tuple assignments like `[a, b, c] = request.security(...)`, put everything on one line. Pine Script does NOT support `=` followed by a newline.
 
 ## Git Commit Rules
 

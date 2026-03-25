@@ -701,17 +701,11 @@ detect_fvg() =>
 // ─────────────────────────────────────────────────────────────────────
 // request.security budget: 2 calls used, 14 tuple elements / 127 max
 // HTF 1 Data - Consolidated tuple (7 elements)
-[htf_high, htf_low, htf_close, htf_high_2, htf_low_2, htf_bar_idx_raw, htf_atr] =
-    request.security(syminfo.tickerid, i_htf_timeframe,
-        [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period)],
-        lookahead = barmerge.lookahead_off)
+[htf_high, htf_low, htf_close, htf_high_2, htf_low_2, htf_bar_idx_raw, htf_atr] = request.security(syminfo.tickerid, i_htf_timeframe, [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period)], lookahead = barmerge.lookahead_off)
 int htf_bar_idx = int(htf_bar_idx_raw)
 
 // HTF 2 Data - Consolidated tuple (7 elements)
-[htf2_high, htf2_low, htf2_close, htf2_high_2, htf2_low_2, htf2_bar_idx_raw, htf2_atr] =
-    request.security(syminfo.tickerid, i_htf_timeframe_2,
-        [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period)],
-        lookahead = barmerge.lookahead_off)
+[htf2_high, htf2_low, htf2_close, htf2_high_2, htf2_low_2, htf2_bar_idx_raw, htf2_atr] = request.security(syminfo.tickerid, i_htf_timeframe_2, [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period)], lookahead = barmerge.lookahead_off)
 int htf2_bar_idx = int(htf2_bar_idx_raw)
 
 // Track HTF bar changes to detect new HTF bars
