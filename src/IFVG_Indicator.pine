@@ -2132,7 +2132,9 @@ render_ifvg_boxes() =>
                             dol_text = not na(ifvg.dol) ? (ifvg.dol.liq_type + " @ " + str.tostring(ifvg.dol.level, format.mintick)) : "None"
                             dol_check = not na(ifvg.dol) ? "☑" : "☐"
                             entry_status = ifvg.entry_valid ? "VALID" : "INVALID"
-
+                            string pd_zone_display = ""
+                            if not na(ifvg.pd_zone) and ifvg.pd_zone != "neutral"
+                                pd_zone_display := "\nZone: " + str.upper(ifvg.pd_zone)
                             tooltip_text = "Grade: " + ifvg.grade + "\n" +
                                           "─────────────\n" +
                                           sweep_check + " Sweep\n" +
@@ -2140,11 +2142,11 @@ render_ifvg_boxes() =>
                                           momentum_check + " Momentum: " + momentum_text + "\n" +
                                           dol_check + " DOL: " + dol_text + "\n" +
                                           "─────────────\n" +
-                                          "Entry: " + entry_status
-
-                            // Entry line label: Grade + Direction (positioned on top right of line)
+                                          "Entry: " + entry_status + pd_zone_display
+                            // Entry line label: Grade + Direction + PD Zone (per D-08)
                             direction_text = ifvg.is_bullish ? "BUY" : "SELL"
-                            entry_label_text = ifvg.grade + " " + direction_text
+                            pd_zone_text = not na(ifvg.pd_zone) and ifvg.pd_zone != "neutral" ? " [" + str.upper(ifvg.pd_zone) + "]" : ""
+                            entry_label_text = ifvg.grade + " " + direction_text + pd_zone_text
 
                             ifvg.entry_label_id := label.new(
                                 x = right_edge,
@@ -2297,6 +2299,75 @@ render_htf_ifvg_boxes(array<IFVG> arr, string tf_label) =>
                                 textalign = text.align_right,
                                 yloc = yloc.price
                             )
+
+// ─────────────────────────────────────────────────────────────────────
+// Render Premium/Discount Zone Lines, Labels, and Fills
+// Per D-10: Lines span full chart width (structural reference)
+// Per D-12: Right-edge price labels: "Swing H (100%)", "EQ (50%)", "Swing L (0%)"
+// ─────────────────────────────────────────────────────────────────────
+render_pd_zones() =>
+    // Delete existing PD zone drawings (delete-before-recreate pattern)
+    if not na(g_pd_premium_fill)
+        linefill.delete(g_pd_premium_fill)
+        g_pd_premium_fill := na
+    if not na(g_pd_discount_fill)
+        linefill.delete(g_pd_discount_fill)
+        g_pd_discount_fill := na
+    if not na(g_pd_ote_fill)
+        linefill.delete(g_pd_ote_fill)
+        g_pd_ote_fill := na
+    if not na(g_pd_high_line)
+        line.delete(g_pd_high_line)
+    if not na(g_pd_low_line)
+        line.delete(g_pd_low_line)
+    if not na(g_pd_eq_line)
+        line.delete(g_pd_eq_line)
+    if not na(g_pd_ote_low_line)
+        line.delete(g_pd_ote_low_line)
+    if not na(g_pd_ote_high_line)
+        line.delete(g_pd_ote_high_line)
+    if not na(g_pd_high_label)
+        label.delete(g_pd_high_label)
+    if not na(g_pd_low_label)
+        label.delete(g_pd_low_label)
+    if not na(g_pd_eq_label)
+        label.delete(g_pd_eq_label)
+    if not na(g_pd_ote_low_label)
+        label.delete(g_pd_ote_low_label)
+    if not na(g_pd_ote_high_label)
+        label.delete(g_pd_ote_high_label)
+    // Recreate if enabled and data available
+    if i_enable_pd_zones and not na(g_pd_swing_high) and not na(g_pd_swing_low) and g_pd_swing_high > g_pd_swing_low
+        int right_edge = bar_index + i_extend_bars
+        int left_edge = math.max(bar_index - 400, 0)
+        // Zone boundary lines (per D-10: full chart width)
+        if i_pd_show_lines
+            // Swing High line - width 1 dashed (discretion)
+            g_pd_high_line := line.new(left_edge, g_pd_swing_high, right_edge, g_pd_swing_high, color=i_pd_premium_color, style=line.style_dashed, width=1)
+            // Swing Low line - width 1 dashed (discretion)
+            g_pd_low_line := line.new(left_edge, g_pd_swing_low, right_edge, g_pd_swing_low, color=i_pd_discount_color, style=line.style_dashed, width=1)
+            // Equilibrium line - width 2 solid (discretion: most important level)
+            g_pd_eq_line := line.new(left_edge, g_pd_equilibrium, right_edge, g_pd_equilibrium, color=i_pd_equilibrium_color, style=line.style_solid, width=2)
+            // Right-edge labels (per D-12)
+            g_pd_high_label := label.new(right_edge, g_pd_swing_high, "Swing H (100%)", style=label.style_none, textcolor=i_pd_premium_color, size=size.tiny)
+            g_pd_low_label := label.new(right_edge, g_pd_swing_low, "Swing L (0%)", style=label.style_none, textcolor=i_pd_discount_color, size=size.tiny)
+            g_pd_eq_label := label.new(right_edge, g_pd_equilibrium, "EQ (50%)", style=label.style_none, textcolor=i_pd_equilibrium_color, size=size.tiny)
+        // Optional zone fill (per D-11: off by default, requires lines)
+        if i_pd_show_fill and i_pd_show_lines
+            g_pd_premium_fill := linefill.new(g_pd_high_line, g_pd_eq_line, i_pd_premium_color)
+            g_pd_discount_fill := linefill.new(g_pd_eq_line, g_pd_low_line, i_pd_discount_color)
+        // OTE zone lines (per D-03: two dashed lines at 62% and 79%, per D-05: off by default)
+        if i_pd_show_ote and not na(g_pd_ote_low) and not na(g_pd_ote_high)
+            // OTE lines - purple color (discretion: #AB47BC at 70% opacity)
+            color ote_line_color = color.new(#AB47BC, 70)
+            g_pd_ote_low_line := line.new(left_edge, g_pd_ote_low, right_edge, g_pd_ote_low, color=ote_line_color, style=line.style_dashed, width=1)
+            g_pd_ote_high_line := line.new(left_edge, g_pd_ote_high, right_edge, g_pd_ote_high, color=ote_line_color, style=line.style_dashed, width=1)
+            g_pd_ote_low_label := label.new(right_edge, g_pd_ote_low, "OTE 62%", style=label.style_none, textcolor=ote_line_color, size=size.tiny)
+            g_pd_ote_high_label := label.new(right_edge, g_pd_ote_high, "OTE 79%", style=label.style_none, textcolor=ote_line_color, size=size.tiny)
+            // Optional OTE fill (per D-03: separate toggle from zone fill)
+            if i_pd_show_ote_fill
+                color ote_fill_color = color.new(#AB47BC, 90)
+                g_pd_ote_fill := linefill.new(g_pd_ote_low_line, g_pd_ote_high_line, ote_fill_color)
 
 // ─────────────────────────────────────────────────────────────────────
 // Get timeframe display label
