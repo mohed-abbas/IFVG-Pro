@@ -18,9 +18,9 @@ Requirements for the current milestone. Each maps to roadmap phases.
 - [x] **PDZ-01**: Detect HTF swing-based dealing range using ta.pivothigh/ta.pivotlow via request.security()
 - [x] **PDZ-02**: Calculate equilibrium (50%), premium zone (above EQ), and discount zone (below EQ)
 - [x] **PDZ-03**: Integrate PD zone positioning into grading algorithm (+1 optimal zone, -1 wrong zone)
-- [ ] **PDZ-04**: Visualize zone boundaries with dashed lines, labels showing Swing H/L and EQ levels
-- [ ] **PDZ-05**: Optional zone fill (linefill) between swing high/EQ and EQ/swing low
-- [ ] **PDZ-06**: Visualize OTE zone (62%-79% retracement) with optional toggle
+- [x] **PDZ-04**: Visualize zone boundaries with dashed lines, labels showing Swing H/L and EQ levels
+- [x] **PDZ-05**: Optional zone fill (linefill) between swing high/EQ and EQ/swing low
+- [x] **PDZ-06**: Visualize OTE zone (62%-79% retracement) with optional toggle
 - [x] **PDZ-07**: Recalibrate grade thresholds after adding PD modifier to prevent grade inflation
 - [x] **PDZ-08**: Store pd_zone field ("premium"/"discount"/"equilibrium"/"neutral") on IFVG type
 
@@ -35,8 +35,8 @@ Requirements for the current milestone. Each maps to roadmap phases.
 
 ### Dashboard
 
-- [ ] **DSH-01**: Add PD Zone row showing current zone (PREMIUM/DISCOUNT) with color coding
-- [ ] **DSH-02**: Add Range % row showing current position within dealing range (0-100%)
+- [x] **DSH-01**: Add PD Zone row showing current zone (PREMIUM/DISCOUNT) with color coding
+- [x] **DSH-02**: Add Range % row showing current position within dealing range (0-100%)
 - [ ] **DSH-03**: Add Current Session row showing active session name
 - [ ] **DSH-04**: Expand dashboard table from 10 to ~14 rows while maintaining readability
 
@@ -83,13 +83,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PDZ-01 | Phase 2 | Complete |
 | PDZ-02 | Phase 2 | Complete |
 | PDZ-03 | Phase 2 | Complete |
-| PDZ-04 | Phase 2 | Pending |
-| PDZ-05 | Phase 2 | Pending |
-| PDZ-06 | Phase 2 | Pending |
+| PDZ-04 | Phase 2 | Complete |
+| PDZ-05 | Phase 2 | Complete |
+| PDZ-06 | Phase 2 | Complete |
 | PDZ-07 | Phase 2 | Complete |
 | PDZ-08 | Phase 2 | Complete |
-| DSH-01 | Phase 2 | Pending |
-| DSH-02 | Phase 2 | Pending |
+| DSH-01 | Phase 2 | Complete |
+| DSH-02 | Phase 2 | Complete |
 | SES-01 | Phase 3 | Pending |
 | SES-02 | Phase 3 | Pending |
 | SES-03 | Phase 3 | Pending |

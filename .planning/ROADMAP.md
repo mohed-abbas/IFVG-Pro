@@ -49,7 +49,7 @@ Plans:
 
 Plans:
 - [x] 02-01-PLAN.md -- PD zone engine: type extension, inputs, globals, HTF swing detection, zone calculation, grading integration
-- [ ] 02-02-PLAN.md -- PD zone visualization (lines, labels, fills, OTE), tooltip update, dashboard expansion
+- [x] 02-02-PLAN.md -- PD zone visualization (lines, labels, fills, OTE), tooltip update, dashboard expansion
 - [ ] 02-03-PLAN.md -- Human verification of complete Phase 2 implementation on TradingView
 
 ### Phase 3: Session Tracking & Visualization
