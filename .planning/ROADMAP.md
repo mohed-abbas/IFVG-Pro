@@ -44,13 +44,13 @@ Plans:
   3. Setups in the optimal zone (longs in discount, shorts in premium) receive a +1 quality boost; wrong-zone setups receive -1 -- observable as grade differences between same-quality setups in different zones
   4. The dashboard shows the current PD zone name (PREMIUM/DISCOUNT) with color coding and the current range percentage (0-100%)
   5. Grade distribution remains balanced after adding the PD modifier -- no single grade exceeds 40% of setups after threshold recalibration
-**Plans**: TBD
+**Plans**: 3 plans
 **UI hint**: yes
 
 Plans:
-- [ ] 02-01: TBD
-- [ ] 02-02: TBD
-- [ ] 02-03: TBD
+- [ ] 02-01-PLAN.md -- PD zone engine: type extension, inputs, globals, HTF swing detection, zone calculation, grading integration
+- [ ] 02-02-PLAN.md -- PD zone visualization (lines, labels, fills, OTE), tooltip update, dashboard expansion
+- [ ] 02-03-PLAN.md -- Human verification of complete Phase 2 implementation on TradingView
 
 ### Phase 3: Session Tracking & Visualization
 **Goal**: Traders can see Asian, London, and NY session boundaries with tracked highs/lows as liquidity reference levels
@@ -93,7 +93,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Bug Fixes & Security Consolidation | 0/2 | Planned | - |
-| 2. PD Zone Detection & Grading Integration | 0/0 | Not started | - |
+| 1. Bug Fixes & Security Consolidation | 2/2 | Complete | 2026-03-24 |
+| 2. PD Zone Detection & Grading Integration | 0/3 | Planned | - |
 | 3. Session Tracking & Visualization | 0/0 | Not started | - |
 | 4. Alert System | 0/0 | Not started | - |
