@@ -2545,7 +2545,7 @@ find_most_recent_ifvg() =>
 // SECTION 11: DASHBOARD (Phase 3 Enhanced)
 // ══════════════════════════════════════════════════════════════════════
 
-var table dashboard = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+var table dashboard = table.new(position.top_right, 2, 12, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
 
 render_dashboard(IFVG latest_ifvg) =>
     if barstate.islast
@@ -2611,6 +2611,23 @@ render_dashboard(IFVG latest_ifvg) =>
                 htf_tf_text := htf_tf_text + " / " + get_tf_label(i_htf_timeframe_2)
         table.cell(dashboard, 0, 9, "HTF:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
         table.cell(dashboard, 1, 9, htf_tf_text, text_color=color.white, text_size=size.small, text_halign=text.align_right)
+        // Row 10: PD Zone (per DSH-01)
+        string pd_zone_text = "-"
+        color pd_zone_color = color.gray
+        if i_enable_pd_zones and g_pd_current_zone != "neutral"
+            pd_zone_text := str.upper(g_pd_current_zone)
+            if g_pd_current_zone == "premium"
+                pd_zone_color := color.red
+            else if g_pd_current_zone == "discount"
+                pd_zone_color := color.green
+        table.cell(dashboard, 0, 10, "PD Zone:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+        table.cell(dashboard, 1, 10, pd_zone_text, text_color=pd_zone_color, text_size=size.small, text_halign=text.align_right)
+        // Row 11: Range % (per DSH-02)
+        string zone_pct_text = "-"
+        if i_enable_pd_zones and not na(g_pd_current_percent)
+            zone_pct_text := str.tostring(g_pd_current_percent, "#.0") + "%"
+        table.cell(dashboard, 0, 11, "Range %:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+        table.cell(dashboard, 1, 11, zone_pct_text, text_color=color.white, text_size=size.small, text_halign=text.align_right)
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 12: MAIN EXECUTION LOOP
@@ -2742,4 +2759,8 @@ if i_show_indicator
             render_htf_ifvg_boxes(g_htf2_ifvg_array, htf2_label)
 
     render_liquidity_lines()
+    // ─────────────────────────────────────────────────────────────────
+    // Step 9C: Render Premium/Discount zones
+    // ─────────────────────────────────────────────────────────────────
+    render_pd_zones()
     render_dashboard(current_latest_ifvg)
