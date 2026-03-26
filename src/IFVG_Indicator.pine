@@ -960,7 +960,14 @@ check_htf_inversions(array<FVG> fvg_arr, array<IFVG> ifvg_arr, float htf_c, stri
                                 be_line_id = na,
                                 sl_line_id = na,
                                 entry_line_id = na,
-                                entry_label_id = na
+                                entry_label_id = na,
+                                delivery_tf = "",
+                                delivery_top = na,
+                                delivery_bottom = na,
+                                delivery_start_bar = na,
+                                delivery_end_bar = na,
+                                delivery_box_id = na,
+                                pd_zone = "neutral"
                             )
 
                             array.push(ifvg_arr, new_ifvg)
@@ -1561,7 +1568,7 @@ is_fvg_singular(FVG source_fvg) =>
 // ─────────────────────────────────────────────────────────────────────
 // Full grading algorithm
 // ─────────────────────────────────────────────────────────────────────
-calculate_grade(bool has_sweep, bool has_delivery, string momentum, bool has_dol, bool fvg_singular) =>
+calculate_grade(bool has_sweep, bool has_delivery, string momentum, bool has_dol, bool fvg_singular, int pd_zone_modifier) =>
     string result = "C"
 
     // ═══════════════════════════════════════════════════════════
@@ -1603,6 +1610,8 @@ calculate_grade(bool has_sweep, bool has_delivery, string momentum, bool has_dol
         // Bonus: Both sweep AND delivery
         if has_sweep and has_delivery
             quality_score := quality_score + 1
+        // Premium/Discount Zone modifier (per D-06: thresholds unchanged, score range now -3 to +4)
+        quality_score := quality_score + pd_zone_modifier
 
         // ═══════════════════════════════════════════════════════
         // STEP 3: COMBINE TIER + MODIFIER
@@ -1759,10 +1768,8 @@ check_inversions() =>
                             int delivery_start = has_delivery ? delivery_record.start_bar : na
                             int delivery_end = has_delivery ? delivery_record.end_bar : na
                             bool fvg_singular = is_fvg_singular(fvg)
-
-                            string grade = calculate_grade(
-                                has_sweep, has_delivery, momentum, has_dol, fvg_singular
-                            )
+                            int pd_modifier = get_pd_zone_modifier(ifvg_is_bullish)
+                            string grade = calculate_grade(has_sweep, has_delivery, momentum, has_dol, fvg_singular, pd_modifier)
 
                             // Create IFVG
                             new_ifvg = IFVG.new(
@@ -1795,7 +1802,8 @@ check_inversions() =>
                                 sl_line_id = na,
                                 entry_line_id = na,
                                 entry_label_id = na,
-                                delivery_box_id = na
+                                delivery_box_id = na,
+                                pd_zone = g_pd_current_zone
                             )
 
                             array.push(g_ifvg_array, new_ifvg)
@@ -2542,6 +2550,10 @@ if i_show_indicator
     // Step 1: Detect swing points for liquidity
     // ─────────────────────────────────────────────────────────────────
     detect_swing_points()
+    // ─────────────────────────────────────────────────────────────────
+    // Step 1B: Update Premium/Discount zones
+    // ─────────────────────────────────────────────────────────────────
+    update_pd_zones()
 
     // ─────────────────────────────────────────────────────────────────
     // Step 2: Check for EQH/EQL formations
