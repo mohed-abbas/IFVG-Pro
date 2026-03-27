@@ -288,7 +288,7 @@ i_ifvg_border_style = input.string("Dashed", "IFVG Border Style", options=["Soli
 string GROUP_PD_ZONES = "═══ Premium/Discount Zones ═══"
 i_enable_pd_zones      = input.bool(true, "Enable PD Zones", group=GROUP_PD_ZONES, tooltip="Calculate Premium/Discount zones based on HTF swing detection")
 i_pd_timeframe         = input.timeframe("", "PD Zone Timeframe", group=GROUP_PD_ZONES, tooltip="Timeframe for swing-based dealing range detection (default: chart timeframe)")
-i_pd_swing_lookback    = input.int(5, "Swing Lookback", minval=3, maxval=20, group=GROUP_PD_ZONES, tooltip="Bars left/right for HTF pivot detection")
+i_pd_swing_lookback    = input.int(10, "Swing Length", minval=3, maxval=50, group=GROUP_PD_ZONES, tooltip="Bars without new extreme to confirm swing reversal (higher = larger swings)")
 i_pd_show_lines        = input.bool(true, "Show Zone Lines", group=GROUP_PD_ZONES, tooltip="Display equilibrium and swing boundary lines")
 i_pd_show_fill         = input.bool(false, "Show Zone Fill", group=GROUP_PD_ZONES, tooltip="Fill premium/discount zones with background color (off by default per D-11)")
 i_pd_show_ote          = input.bool(false, "Show OTE Zone (62-79%)", group=GROUP_PD_ZONES, tooltip="Display Optimal Trade Entry zone lines at 62% and 79% retracement (off by default per D-05)")
@@ -328,6 +328,11 @@ var float g_pd_ote_low = na
 var float g_pd_ote_high = na
 var float g_pd_current_percent = na
 var string g_pd_current_zone = "neutral"
+// Zigzag state machine for PD zone swing detection
+var int g_pd_zz_dir = 0              // 0=init, 1=upleg (tracking high), -1=downleg (tracking low)
+var float g_pd_zz_high = na          // Current tracked swing high (extends during upleg, frozen during downleg)
+var float g_pd_zz_low = na           // Current tracked swing low (extends during downleg, frozen during upleg)
+var int g_pd_zz_since = 0            // Bars since last new extreme (for reversal confirmation)
 // PD Zone visual element references (used by render_pd_zones in Plan 02)
 var line g_pd_high_line = na
 var line g_pd_low_line = na
@@ -757,19 +762,46 @@ prev_htf_bar := htf_bar_idx
 prev_htf2_bar := htf2_bar_idx
 
 // ─────────────────────────────────────────────────────────────────────
-// PD Zone Swing Detection
-// Chart-TF pivots computed directly; HTF pivots via request.security when PD TF differs
+// PD Zone Swing Detection — Zigzag state machine
+// Guarantees alternating swing H/L for tight dealing range
+// Upleg: tracks highest high, confirms swing H when N bars pass without new high
+// Downleg: tracks lowest low, confirms swing L when N bars pass without new low
 // ─────────────────────────────────────────────────────────────────────
-pd_pivot_high_expr = ta.pivothigh(high, i_pd_swing_lookback, i_pd_swing_lookback)
-pd_pivot_low_expr = ta.pivotlow(low, i_pd_swing_lookback, i_pd_swing_lookback)
-pd_swing_h_chart = ta.valuewhen(not na(pd_pivot_high_expr), pd_pivot_high_expr, 0)
-pd_swing_l_chart = ta.valuewhen(not na(pd_pivot_low_expr), pd_pivot_low_expr, 0)
-// HTF request.security (always evaluated; result used only when PD TF differs from chart TF)
-[pd_swing_h_htf, pd_swing_l_htf] = request.security(syminfo.tickerid, i_pd_timeframe, [pd_swing_h_chart, pd_swing_l_chart], lookahead = barmerge.lookahead_off)
-// Use chart-TF values when PD timeframe matches chart (or is default ""), HTF values otherwise
-bool pd_use_chart_tf = (i_pd_timeframe == "" or i_pd_timeframe == timeframe.period)
-float pd_htf_swing_high = pd_use_chart_tf ? pd_swing_h_chart : pd_swing_h_htf
-float pd_htf_swing_low = pd_use_chart_tf ? pd_swing_l_chart : pd_swing_l_htf
+if barstate.isconfirmed and i_enable_pd_zones
+    if g_pd_zz_dir == 0
+        // Initialize: start with upleg, seed with current bar
+        g_pd_zz_dir := 1
+        g_pd_zz_high := high
+        g_pd_zz_low := low
+        g_pd_zz_since := 0
+    else if g_pd_zz_dir == 1
+        // Upleg: tracking the swing high (extends higher)
+        if high > g_pd_zz_high
+            g_pd_zz_high := high
+            g_pd_zz_since := 0
+        else
+            g_pd_zz_since += 1
+        // Reversal confirmed: price failed to make new high for swing_lookback bars
+        if g_pd_zz_since >= i_pd_swing_lookback
+            g_pd_zz_dir := -1
+            g_pd_zz_low := low
+            g_pd_zz_since := 0
+    else if g_pd_zz_dir == -1
+        // Downleg: tracking the swing low (extends lower)
+        if low < g_pd_zz_low
+            g_pd_zz_low := low
+            g_pd_zz_since := 0
+        else
+            g_pd_zz_since += 1
+        // Reversal confirmed: price failed to make new low for swing_lookback bars
+        if g_pd_zz_since >= i_pd_swing_lookback
+            g_pd_zz_dir := 1
+            g_pd_zz_high := high
+            g_pd_zz_since := 0
+
+// Dealing range from zigzag (high is frozen during downleg, low is frozen during upleg)
+float pd_htf_swing_high = g_pd_zz_high
+float pd_htf_swing_low = g_pd_zz_low
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 5C: PREMIUM/DISCOUNT ZONE CALCULATION
