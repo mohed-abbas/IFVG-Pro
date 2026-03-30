@@ -64,7 +64,6 @@ INPUTS → ENGINE → RENDERING
 
 Setups are graded A+ to C based on:
 - **Sweep presence**: Liquidity sweep before FVG formation
-- **Delivery**: Price delivered from FVG (not just random formation)
 - **Momentum**: "strong_no_chop", "neutral", or "weak_or_choppy"
 - **Zone positioning**: Longs in discount, shorts in premium
 - **Entry validity**: BE point not yet taken at inversion time
@@ -105,7 +104,7 @@ These cause "end of line without line continuation" errors if violated:
 - **Examples of recent commits**:
   - `Phase 3: Multi-Timeframe HTF Analysis`
   - `Phase 2.1: Bug fixes and UX improvements`
-  - `Add PDA delivery detection for IFVG grading system`
+  - `Add series-of-gaps consolidation for IFVG setups`
 
 <!-- GSD:project-start source:PROJECT.md -->
 ## Project
@@ -168,11 +167,10 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 | `FVG` | Fair Value Gap | `top`, `bottom`, `mid`, `start_bar`, `end_bar`, `is_bullish`, `status`, `timeframe`, `box_id`, `label_id` |
 | `SwingPoint` | Swing high/low | `price`, `bar_idx`, `is_high`, `is_internal`, `is_valid` |
 | `Liquidity` | EQH/EQL/ITH/ITL levels | `level`, `liq_type`, `quality`, `touch_count`, `is_swept`, `is_valid`, `line_id`, `label_id` |
-| `DeliveryFVG` | Lightweight FVG for delivery tracking | `top`, `bottom`, `is_bullish`, `was_traversed`, `timeframe` |
-| `IFVG` | Inverted FVG with full grading | `grade`, `entry_valid`, `be_level`, `sl_level`, `has_sweep`, `has_delivery`, `momentum`, plus 7 visual element references |
+| `IFVG` | Inverted FVG with full grading | `grade`, `entry_valid`, `be_level`, `sl_level`, `has_sweep`, `momentum`, plus 7 visual element references |
 ## Data Storage
 - All state stored in `var` arrays (persist across bars)
-- 7 primary arrays declared in Section 3 (lines 289-304):
+- 6 primary arrays declared in Section 3 (lines 289-304):
 - `box` references stored on FVG/IFVG types
 - `line` references stored on Liquidity and IFVG types
 - `label` references stored on all visual types
@@ -189,7 +187,7 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 - HTF arrays capped at same limits as LTF
 ## Configuration
 - No environment variables. All configuration via TradingView `input.*` functions.
-- 11 input groups with ~40 configurable parameters (Section 2, lines 124-283).
+- 10 input groups with ~34 configurable parameters (Section 2, lines 124-283).
 | Group | Parameters | Lines |
 |-------|-----------|-------|
 | General Settings | 4 inputs (enable, max FVGs, max IFVGs, extend bars) | 131-140 |
@@ -198,7 +196,6 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 | Liquidity Detection | 3 inputs (swing lookback, show ITH/ITL, max levels) | 180-186 |
 | EQH/EQL Detection | 5 inputs (show, tolerances, require intact, perfect only, show swept) | 191-205 |
 | Grading Settings | 5 inputs (min grade, show BE/SL, SL type, show grade) | 210-222 |
-| Delivery Detection | 6 inputs (enable, lookback, body only, show box, color, opacity) | 227-239 |
 | Visual Settings | 9 inputs (colors, opacity, labels, sizes) | 244-258 |
 | IFVG Style | 5 inputs (box color, opacity, entry line, entry colors) | 263-273 |
 | Border Settings | 4 inputs (widths, styles) | 278-282 |
@@ -218,7 +215,7 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 
 ## Language & Platform
 ## Naming Patterns
-- Use **PascalCase**: `FVG`, `IFVG`, `SwingPoint`, `Liquidity`, `DeliveryFVG`
+- Use **PascalCase**: `FVG`, `IFVG`, `SwingPoint`, `Liquidity`
 - Defined in Section 1 of `src/IFVG_Indicator.pine` (lines 46-122)
 - Each type includes inline comments for every field
 - Use **snake_case**: `detect_fvg()`, `check_inversions()`, `render_fvg_boxes()`, `find_previous_swing_high()`
@@ -229,7 +226,7 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 - Cleanup: `cleanup_*_array()`
 - Use `i_` prefix with **snake_case**: `i_show_indicator`, `i_max_fvgs`, `i_fvg_atr_period`
 - Always declare with full `input.*()` call on the same line or continued with indentation
-- Use `g_` prefix with **snake_case**: `g_fvg_array`, `g_ifvg_array`, `g_swing_highs`, `g_liquidity_array`, `g_delivery_history`
+- Use `g_` prefix with **snake_case**: `g_fvg_array`, `g_ifvg_array`, `g_swing_highs`, `g_liquidity_array`
 - Always declared with `var` keyword for persistence across bars
 - Use `GROUP_` prefix with **UPPER_CASE**: `GROUP_GENERAL`, `GROUP_FVG`, `GROUP_HTF`, `GROUP_LIQ`
 - Declared as `string` type constants immediately before the inputs they group
@@ -287,7 +284,6 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 | `i_sl_color` | `color.red` | Stop loss level lines |
 | `i_entry_color_bull` | `#2962FF` (blue) | Bullish entry lines |
 | `i_entry_color_bear` | `#F23645` (red) | Bearish entry lines |
-| `i_delivery_color` | `#FF9800` (orange) | Delivery FVG highlight |
 | `i_ifvg_box_color` | `color.gray` | IFVG box fill |
 ### Grade Color Mapping (hardcoded in `grade_to_color()`)
 | Grade | Color | Hex |
@@ -303,7 +299,6 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 - Active FVG boxes: user-configurable via `i_fvg_opacity` (default 85%)
 - IFVG boxes: user-configurable via `i_ifvg_box_opacity` (default 60%)
 - HTF boxes: user-configurable via `i_htf_box_opacity` (default 75%)
-- Delivery boxes: user-configurable via `i_delivery_opacity` (default 70%)
 - Swept/invalid elements: add 50-70% opacity to gray them out
 - Fully transparent: `color.new(color.black, 100)` for invisible label backgrounds
 ### EQH/EQL Quality Colors (hardcoded in `render_liquidity_lines()`)
@@ -336,7 +331,7 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 - **No Co-Authored-By tags**: Do not add `Co-Authored-By: Claude` or similar
 - **Message style**: Short descriptive messages
 - **Phase prefix**: Use `Phase X:` prefix for major feature commits
-- **Examples**: `Phase 3: Multi-Timeframe HTF Analysis`, `Phase 2.1: Bug fixes and UX improvements`, `Add PDA delivery detection for IFVG grading system`
+- **Examples**: `Phase 3: Multi-Timeframe HTF Analysis`, `Phase 2.1: Bug fixes and UX improvements`, `Add series-of-gaps consolidation for IFVG setups`
 ## File Header Convention
 <!-- GSD:conventions-end -->
 
@@ -357,17 +352,17 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 - Used by: Every other section reads `i_*` prefixed variables
 - Purpose: Custom type definitions for all domain objects
 - Location: `src/IFVG_Indicator.pine` lines 36-123
-- Contains: 5 custom types: `FVG`, `SwingPoint`, `Liquidity`, `DeliveryFVG`, `IFVG`
+- Contains: 4 custom types: `FVG`, `SwingPoint`, `Liquidity`, `IFVG`
 - Depends on: Nothing
 - Used by: All data store arrays, all detection/rendering functions
 - Purpose: Global `var` arrays that persist state across bars
 - Location: `src/IFVG_Indicator.pine` lines 284-307
-- Contains: 7 typed arrays initialized once with `var`
+- Contains: 6 typed arrays initialized once with `var`
 - Depends on: Type definitions (Section 1)
 - Used by: Engine and Rendering layers read/write these arrays
-- Purpose: Helper functions for color, grading, cleanup, delivery detection, swing validation
+- Purpose: Helper functions for color, grading, cleanup, swing validation
 - Location: `src/IFVG_Indicator.pine` lines 310-597
-- Contains: Grade conversion, color helpers, array cleanup (FIFO), delivery tracking functions, swing integrity checks, EQH/EQL quality classification
+- Contains: Grade conversion, color helpers, array cleanup (FIFO), swing integrity checks, EQH/EQL quality classification
 - Depends on: Input layer, Data store layer
 - Used by: Engine and Rendering layers
 - Purpose: Core FVG detection (LTF + HTF) and liquidity/swing detection
@@ -396,7 +391,7 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 - Depends on: All other sections
 - Used by: TradingView runtime (called each bar)
 ## Data Flow
-- All state lives in 7 global `var` arrays declared at lines 289-304
+- All state lives in 6 global `var` arrays declared at lines 289-304
 - `var` keyword in Pine Script means the array is initialized once and persists across bars
 - Arrays are modified in-place; objects are mutated directly via field assignment (e.g., `fvg.status := "inverted"`)
 - Each array has a max size enforced by FIFO cleanup functions that `array.shift()` the oldest entry when exceeded
@@ -409,7 +404,7 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 - Purpose: An FVG that has been inverted by a body close through its zone; the primary trading setup
 - Defined at: `src/IFVG_Indicator.pine` lines 92-122
 - Lifecycle: Created when FVG inverts -> `"inverted"` (active setup) -> `"mitigated"` (removed)
-- Key fields: `grade`, `entry_valid`, `be_level`, `be_status`, `sl_level`, `has_sweep`, `has_delivery`, `momentum`, `dol`
+- Key fields: `grade`, `entry_valid`, `be_level`, `be_status`, `sl_level`, `has_sweep`, `momentum`, `dol`
 - Created by: `check_inversions()` (line 1470) or `check_htf_inversions()` (line 765)
 - Purpose: Represents a swing high or swing low used for structure analysis
 - Defined at: `src/IFVG_Indicator.pine` lines 58-64
@@ -421,11 +416,6 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 - Lifecycle: created -> `is_valid=true` -> swept (`is_swept=true`) or broken (`is_valid=false`)
 - Quality classification: `"perfect"` (within 0.02 ATR) or `"relative"` (within 0.10 ATR)
 - Used for: Grading (sweep detection), DOL targeting, dashboard display
-- Purpose: Lightweight FVG record tracking whether price was "delivered" from a prior same-direction FVG
-- Defined at: `src/IFVG_Indicator.pine` lines 82-89
-- Pattern: Recorded when any FVG forms, checked when inversion occurs
-- Created by: `record_fvg_for_delivery()` (line 426)
-- Checked by: `check_delivery()` (line 480)
 ## Entry Points
 - Location: `src/IFVG_Indicator.pine` line 30 (`indicator(...)`)
 - Triggers: TradingView calls the script once per bar
@@ -444,8 +434,8 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 - Bullish FVG inversion: price enters zone AND body closes below `fvg.bottom`
 - Bearish FVG inversion: price enters zone AND body closes above `fvg.top`
 - On inversion: creates IFVG with full grading data, removes FVG from active array
-- Step 1 (Tier): Must have DOL target or grade is "C". Has sweep+delivery = "A" tier. Has sweep OR delivery = "A" tier. Neither = "B" tier.
-- Step 2 (Modifier): Quality score from momentum (+1/-1), FVG clarity (+1/-1), bonus for both sweep AND delivery (+1)
+- Step 1 (Tier): Must have DOL target or grade is "C". Has sweep = "A" tier. No sweep = "B" tier.
+- Step 2 (Modifier): Quality score from momentum (+1/-1), FVG clarity (+1/-1)
 - Step 3 (Combine): A tier + score>=2 = "A+", score>=1 = "A", score>=0 = "A-", else "B+". B tier + score>=1 = "B+", score>=0 = "B", else "B-".
 - BSL sweep (EQH/ITH): `high > level AND close < level` (wick above, body stays below)
 - SSL sweep (EQL/ITL): `low < level AND close > level` (wick below, body stays above)
@@ -456,10 +446,6 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 - Price difference must be within ATR-based tolerance
 - Liquidity must NOT have been swept between the two swings
 - Quality: "perfect" if within `ATR * 0.02`, "relative" if within `ATR * 0.10`
-- Searches `g_delivery_history` for a prior FVG matching IFVG direction
-- Delivery FVG must have formed before source FVG
-- Must be within `i_delivery_lookback` bars
-- Price must have traversed the delivery FVG zone
 ## Error Handling
 - Every array access is guarded by `i < array.size(arr)` bounds checks
 - `na()` checks on all float/object values before use (e.g., `not na(atr_value)`, `not na(fvg.box_id)`)
@@ -475,11 +461,9 @@ A TradingView Pine Script v6 overlay indicator that automates the detection, gra
 - `g_ifvg_array`: capped at `i_max_ifvgs` (default 30, max 100)
 - `g_liquidity_array`: capped at `i_max_liquidity` (default 30, max 100)
 - `g_swing_highs` / `g_swing_lows`: hardcoded cap at 50 entries each (line 899, 923)
-- `g_delivery_history`: cleaned by lookback period, no hard cap
 - HTF arrays: use same `i_max_fvgs` / `i_max_ifvgs` limits
 - FIFO (`array.shift()`) -- oldest entries removed first
 - Drawing cleanup on removal: every cleanup function deletes associated `box`, `line`, `label` objects
-- Delivery history cleaned by age (`bar_index - record.end_bar > i_delivery_lookback`)
 - Mitigated IFVGs removed from array entirely (not just marked)
 - Rendering: all drawings deleted and recreated each bar to prevent stale visuals
 ## Cross-Cutting Concerns
