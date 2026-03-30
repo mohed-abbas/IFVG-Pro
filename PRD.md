@@ -3,7 +3,9 @@
 > **Version**: 1.0
 > **Created**: 2026-01-20
 > **Status**: Draft - Pending User Approval
-> **Platform**: TradingView (Pine Script v5)
+> **Platform**: TradingView (Pine Script v6)
+>
+> **Implementation Note (2026-03-30)**: Delivery detection and Premium/Discount zone features described in this document are **not yet implemented**. They were removed from the codebase for clean re-implementation.
 
 ---
 

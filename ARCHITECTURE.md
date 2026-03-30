@@ -4,6 +4,8 @@
 > **Created**: 2026-01-20
 > **Platform**: TradingView Pine Script v6
 > **Document Type**: Technical Design Specification
+>
+> **Implementation Note (2026-03-30)**: Delivery detection and Premium/Discount zone features described in this document are **not yet implemented**. They were removed from the codebase for clean re-implementation. Sections referencing these features describe the planned design, not current code.
 
 ---
 
