@@ -113,13 +113,13 @@ type IFVG
 // ─────────────────────────────────────────────────────────────────────
 string GROUP_GENERAL = "═══ General Settings ═══"
 i_show_indicator    = input.bool(true, "Enable Indicator", group=GROUP_GENERAL)
-i_max_fvgs          = input.int(20, "Max Active FVGs to Track", minval=5, maxval=50, group=GROUP_GENERAL,
+i_max_fvgs          = input.int(3, "Max Active FVGs to Track", minval=2, maxval=50, group=GROUP_GENERAL,
                       tooltip="Maximum number of active (non-inverted) FVGs to keep in memory")
-i_max_ifvgs         = input.int(30, "Max IFVGs to Track", minval=10, maxval=100, group=GROUP_GENERAL,
+i_max_ifvgs         = input.int(10, "Max IFVGs to Track", minval=2, maxval=100, group=GROUP_GENERAL,
                       tooltip="Maximum number of IFVG setups to keep in memory. Independent of FVG limit.")
-i_max_recent_display = input.int(5, "Max Recent IFVGs to Show", minval=1, maxval=20, group=GROUP_GENERAL,
+i_max_recent_display = input.int(2, "Max Recent IFVGs to Show", minval=1, maxval=20, group=GROUP_GENERAL,
                       tooltip="Only display the most recent N IFVG setups on chart (visual filter). Does not affect tracking.")
-i_extend_bars       = input.int(50, "Extend Boxes (bars)", minval=10, maxval=200, group=GROUP_GENERAL,
+i_extend_bars       = input.int(15, "Extend Boxes (bars)", minval=10, maxval=200, group=GROUP_GENERAL,
                       tooltip="How many bars into the future to extend FVG boxes")
 
 // ─────────────────────────────────────────────────────────────────────
@@ -165,7 +165,7 @@ i_swing_lookback    = input.int(5, "Swing Lookback", minval=3, maxval=10, group=
                       tooltip="Number of bars to look left/right for swing detection")
 i_show_ith_itl      = input.bool(true, "Show ITH/ITL", group=GROUP_LIQ,
                       tooltip="Display Internal Highs and Internal Lows")
-i_max_liquidity     = input.int(30, "Max Liquidity Levels", minval=10, maxval=100, group=GROUP_LIQ,
+i_max_liquidity     = input.int(4, "Max Liquidity Levels", minval=2, maxval=100, group=GROUP_LIQ,
                       tooltip="Maximum liquidity levels to track")
 
 // ─────────────────────────────────────────────────────────────────────
