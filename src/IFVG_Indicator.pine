@@ -120,7 +120,6 @@ type IFVG
     line entry_line_id  // Reference to entry line (at inversion close)
     label entry_label_id // Reference to entry line label (grade + direction)
     box delivery_box_id // Reference to delivery FVG highlight box
-    string pd_zone      // "premium", "discount", "equilibrium", or "neutral" (frozen at inversion, per D-09)
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 2: INPUT CONFIGURATION
@@ -282,21 +281,6 @@ i_ifvg_border_width = input.int(2, "IFVG Border Width", minval=1, maxval=4, grou
 i_fvg_border_style  = input.string("Solid", "FVG Border Style", options=["Solid", "Dashed", "Dotted"], group=GROUP_BORDER)
 i_ifvg_border_style = input.string("Dashed", "IFVG Border Style", options=["Solid", "Dashed", "Dotted"], group=GROUP_BORDER)
 
-// ─────────────────────────────────────────────────────────────────────
-// Premium/Discount Zone Settings
-// ─────────────────────────────────────────────────────────────────────
-string GROUP_PD_ZONES = "═══ Premium/Discount Zones ═══"
-i_enable_pd_zones      = input.bool(true, "Enable PD Zones", group=GROUP_PD_ZONES, tooltip="Calculate Premium/Discount zones based on HTF swing detection")
-i_pd_range_lookback    = input.int(50, "Range Lookback", minval=10, maxval=500, group=GROUP_PD_ZONES, tooltip="Number of bars to look back for the highest high and lowest low that define the dealing range")
-i_pd_show_lines        = input.bool(true, "Show Zone Lines", group=GROUP_PD_ZONES, tooltip="Display equilibrium and swing boundary lines")
-i_pd_show_fill         = input.bool(false, "Show Zone Fill", group=GROUP_PD_ZONES, tooltip="Fill premium/discount zones with background color (off by default per D-11)")
-i_pd_show_ote          = input.bool(false, "Show OTE Zone (62-79%)", group=GROUP_PD_ZONES, tooltip="Display Optimal Trade Entry zone lines at 62% and 79% retracement (off by default per D-05)")
-i_pd_show_ote_fill     = input.bool(false, "Show OTE Fill", group=GROUP_PD_ZONES, tooltip="Fill the OTE zone between 62% and 79% lines")
-i_pd_premium_color     = input.color(color.new(#FF5252, 85), "Premium Zone Color", group=GROUP_PD_ZONES)
-i_pd_discount_color    = input.color(color.new(#4CAF50, 85), "Discount Zone Color", group=GROUP_PD_ZONES)
-i_pd_equilibrium_color = input.color(color.new(#FFEB3B, 50), "Equilibrium Color", group=GROUP_PD_ZONES)
-i_pd_grade_modifier    = input.bool(true, "Include in Grading", group=GROUP_PD_ZONES, tooltip="Apply zone-based quality modifier to IFVG grades (+1 optimal, -1 wrong zone). Independent of visual toggles per D-05/D-07")
-
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 3: GLOBAL VARIABLES & DATA STORES
 // ══════════════════════════════════════════════════════════════════════
@@ -318,29 +302,6 @@ var array<Liquidity> g_liquidity_array = array.new<Liquidity>()
 
 // Delivery FVG History (for delivery detection)
 var array<DeliveryFVG> g_delivery_history = array.new<DeliveryFVG>()
-
-// Premium/Discount Zone Variables
-var float g_pd_swing_high = na
-var float g_pd_swing_low = na
-var float g_pd_equilibrium = na
-var float g_pd_ote_low = na
-var float g_pd_ote_high = na
-var float g_pd_current_percent = na
-var string g_pd_current_zone = "neutral"
-// PD Zone visual element references (used by render_pd_zones in Plan 02)
-var line g_pd_high_line = na
-var line g_pd_low_line = na
-var line g_pd_eq_line = na
-var line g_pd_ote_low_line = na
-var line g_pd_ote_high_line = na
-var linefill g_pd_premium_fill = na
-var linefill g_pd_discount_fill = na
-var linefill g_pd_ote_fill = na
-var label g_pd_high_label = na
-var label g_pd_low_label = na
-var label g_pd_eq_label = na
-var label g_pd_ote_low_label = na
-var label g_pd_ote_high_label = na
 
 // ATR for sizing
 atr_value = ta.atr(i_fvg_atr_period)
@@ -738,7 +699,7 @@ detect_fvg() =>
 // ─────────────────────────────────────────────────────────────────────
 // Get HTF OHLC data via request.security
 // ─────────────────────────────────────────────────────────────────────
-// request.security budget: 3 calls used (incl PD), 16 tuple elements / 127 max
+// request.security budget: 2 calls used, 14 tuple elements / 127 max
 // HTF 1 Data - Consolidated tuple (7 elements)
 [htf_high, htf_low, htf_close, htf_high_2, htf_low_2, htf_bar_idx_raw, htf_atr] = request.security(syminfo.tickerid, i_htf_timeframe, [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period)], lookahead = barmerge.lookahead_off)
 int htf_bar_idx = int(htf_bar_idx_raw)
@@ -754,73 +715,6 @@ bool htf_bar_changed = na(prev_htf_bar) or htf_bar_idx != prev_htf_bar
 bool htf2_bar_changed = na(prev_htf2_bar) or htf2_bar_idx != prev_htf2_bar
 prev_htf_bar := htf_bar_idx
 prev_htf2_bar := htf2_bar_idx
-
-// ─────────────────────────────────────────────────────────────────────
-// PD Zone Dealing Range — Highest/Lowest within lookback window
-// Simple and reliable: always shows the current price structure
-// ─────────────────────────────────────────────────────────────────────
-float pd_htf_swing_high = ta.highest(high, i_pd_range_lookback)
-float pd_htf_swing_low = ta.lowest(low, i_pd_range_lookback)
-
-// ══════════════════════════════════════════════════════════════════════
-// SECTION 5C: PREMIUM/DISCOUNT ZONE CALCULATION
-// ══════════════════════════════════════════════════════════════════════
-
-// ─────────────────────────────────────────────────────────────────────
-// Calculate PD Zone levels and current zone classification
-// Returns tuple — globals assigned in main loop (Pine v6 cannot modify var globals in functions)
-// ─────────────────────────────────────────────────────────────────────
-calc_pd_zones() =>
-    float sh = g_pd_swing_high
-    float sl = g_pd_swing_low
-    float eq = g_pd_equilibrium
-    float ote_l = g_pd_ote_low
-    float ote_h = g_pd_ote_high
-    float pct = g_pd_current_percent
-    string zone = g_pd_current_zone
-    if i_enable_pd_zones and not na(pd_htf_swing_high) and not na(pd_htf_swing_low)
-        sh := pd_htf_swing_high
-        sl := pd_htf_swing_low
-        float range_size = sh - sl
-        if range_size > 0
-            eq := sl + (range_size * 0.5)
-            ote_l := sl + (range_size * 0.62)
-            ote_h := sl + (range_size * 0.79)
-            pct := ((close - sl) / range_size) * 100
-            if close > eq
-                zone := "premium"
-            else if close < eq
-                zone := "discount"
-            else
-                zone := "equilibrium"
-        else
-            zone := "neutral"
-            pct := na
-    else
-        zone := "neutral"
-        pct := na
-    [sh, sl, eq, ote_l, ote_h, pct, zone]
-
-// ─────────────────────────────────────────────────────────────────────
-// Get PD Zone Grading Modifier
-// Returns: +1 (optimal zone), -1 (wrong zone), 0 (neutral/disabled)
-// Per D-04: Only basic premium/discount modifier, no OTE bonus
-// Per D-05/D-07: Independent of visual toggles
-// ─────────────────────────────────────────────────────────────────────
-get_pd_zone_modifier(bool is_bullish_ifvg) =>
-    int modifier = 0
-    if i_enable_pd_zones and i_pd_grade_modifier and g_pd_current_zone != "neutral" and g_pd_current_zone != "equilibrium"
-        if is_bullish_ifvg
-            if g_pd_current_zone == "discount"
-                modifier := 1
-            else if g_pd_current_zone == "premium"
-                modifier := -1
-        else
-            if g_pd_current_zone == "premium"
-                modifier := 1
-            else if g_pd_current_zone == "discount"
-                modifier := -1
-    modifier
 
 // ─────────────────────────────────────────────────────────────────────
 // Detect HTF Fair Value Gaps
@@ -971,8 +865,7 @@ check_htf_inversions(array<FVG> fvg_arr, array<IFVG> ifvg_arr, float htf_c, stri
                                 delivery_bottom = na,
                                 delivery_start_bar = na,
                                 delivery_end_bar = na,
-                                delivery_box_id = na,
-                                pd_zone = "neutral"
+                                delivery_box_id = na
                             )
 
                             array.push(ifvg_arr, new_ifvg)
@@ -1573,7 +1466,7 @@ is_fvg_singular(FVG source_fvg) =>
 // ─────────────────────────────────────────────────────────────────────
 // Full grading algorithm
 // ─────────────────────────────────────────────────────────────────────
-calculate_grade(bool has_sweep, bool has_delivery, string momentum, bool has_dol, bool fvg_singular, int pd_zone_modifier) =>
+calculate_grade(bool has_sweep, bool has_delivery, string momentum, bool has_dol, bool fvg_singular) =>
     string result = "C"
 
     // ═══════════════════════════════════════════════════════════
@@ -1615,8 +1508,6 @@ calculate_grade(bool has_sweep, bool has_delivery, string momentum, bool has_dol
         // Bonus: Both sweep AND delivery
         if has_sweep and has_delivery
             quality_score := quality_score + 1
-        // Premium/Discount Zone modifier (per D-06: thresholds unchanged, score range now -3 to +4)
-        quality_score := quality_score + pd_zone_modifier
 
         // ═══════════════════════════════════════════════════════
         // STEP 3: COMBINE TIER + MODIFIER
@@ -1773,8 +1664,7 @@ check_inversions() =>
                             int delivery_start = has_delivery ? delivery_record.start_bar : na
                             int delivery_end = has_delivery ? delivery_record.end_bar : na
                             bool fvg_singular = is_fvg_singular(fvg)
-                            int pd_modifier = get_pd_zone_modifier(ifvg_is_bullish)
-                            string grade = calculate_grade(has_sweep, has_delivery, momentum, has_dol, fvg_singular, pd_modifier)
+                            string grade = calculate_grade(has_sweep, has_delivery, momentum, has_dol, fvg_singular)
 
                             // Create IFVG
                             new_ifvg = IFVG.new(
@@ -1807,8 +1697,7 @@ check_inversions() =>
                                 sl_line_id = na,
                                 entry_line_id = na,
                                 entry_label_id = na,
-                                delivery_box_id = na,
-                                pd_zone = g_pd_current_zone
+                                delivery_box_id = na
                             )
 
                             array.push(g_ifvg_array, new_ifvg)
@@ -2137,9 +2026,6 @@ render_ifvg_boxes() =>
                             dol_text = not na(ifvg.dol) ? (ifvg.dol.liq_type + " @ " + str.tostring(ifvg.dol.level, format.mintick)) : "None"
                             dol_check = not na(ifvg.dol) ? "☑" : "☐"
                             entry_status = ifvg.entry_valid ? "VALID" : "INVALID"
-                            string pd_zone_display = ""
-                            if not na(ifvg.pd_zone) and ifvg.pd_zone != "neutral"
-                                pd_zone_display := "\nZone: " + str.upper(ifvg.pd_zone)
                             tooltip_text = "Grade: " + ifvg.grade + "\n" +
                                           "─────────────\n" +
                                           sweep_check + " Sweep\n" +
@@ -2147,11 +2033,10 @@ render_ifvg_boxes() =>
                                           momentum_check + " Momentum: " + momentum_text + "\n" +
                                           dol_check + " DOL: " + dol_text + "\n" +
                                           "─────────────\n" +
-                                          "Entry: " + entry_status + pd_zone_display
-                            // Entry line label: Grade + Direction + PD Zone (per D-08)
+                                          "Entry: " + entry_status
+                            // Entry line label: Grade + Direction
                             direction_text = ifvg.is_bullish ? "BUY" : "SELL"
-                            pd_zone_text = not na(ifvg.pd_zone) and ifvg.pd_zone != "neutral" ? " [" + str.upper(ifvg.pd_zone) + "]" : ""
-                            entry_label_text = ifvg.grade + " " + direction_text + pd_zone_text
+                            entry_label_text = ifvg.grade + " " + direction_text
 
                             ifvg.entry_label_id := label.new(
                                 x = right_edge,
@@ -2304,9 +2189,6 @@ render_htf_ifvg_boxes(array<IFVG> arr, string tf_label) =>
                                 textalign = text.align_right,
                                 yloc = yloc.price
                             )
-
-// NOTE: render_pd_zones logic is inlined in main loop Step 9C
-// (Pine v6 cannot modify global var drawing refs inside functions)
 
 // ─────────────────────────────────────────────────────────────────────
 // Get timeframe display label
@@ -2484,7 +2366,7 @@ find_most_recent_ifvg() =>
 // SECTION 11: DASHBOARD (Phase 3 Enhanced)
 // ══════════════════════════════════════════════════════════════════════
 
-var table dashboard = table.new(position.top_right, 2, 12, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+var table dashboard = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
 
 render_dashboard(IFVG latest_ifvg) =>
     if barstate.islast
@@ -2550,23 +2432,6 @@ render_dashboard(IFVG latest_ifvg) =>
                 htf_tf_text := htf_tf_text + " / " + get_tf_label(i_htf_timeframe_2)
         table.cell(dashboard, 0, 9, "HTF:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
         table.cell(dashboard, 1, 9, htf_tf_text, text_color=color.white, text_size=size.small, text_halign=text.align_right)
-        // Row 10: PD Zone (per DSH-01)
-        string pd_zone_text = "-"
-        color pd_zone_color = color.gray
-        if i_enable_pd_zones and g_pd_current_zone != "neutral"
-            pd_zone_text := str.upper(g_pd_current_zone)
-            if g_pd_current_zone == "premium"
-                pd_zone_color := color.red
-            else if g_pd_current_zone == "discount"
-                pd_zone_color := color.green
-        table.cell(dashboard, 0, 10, "PD Zone:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
-        table.cell(dashboard, 1, 10, pd_zone_text, text_color=pd_zone_color, text_size=size.small, text_halign=text.align_right)
-        // Row 11: Range % (per DSH-02)
-        string zone_pct_text = "-"
-        if i_enable_pd_zones and not na(g_pd_current_percent)
-            zone_pct_text := str.tostring(g_pd_current_percent, "#.0") + "%"
-        table.cell(dashboard, 0, 11, "Range %:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
-        table.cell(dashboard, 1, 11, zone_pct_text, text_color=color.white, text_size=size.small, text_halign=text.align_right)
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 12: MAIN EXECUTION LOOP
@@ -2577,18 +2442,6 @@ if i_show_indicator
     // Step 1: Detect swing points for liquidity
     // ─────────────────────────────────────────────────────────────────
     detect_swing_points()
-    // ─────────────────────────────────────────────────────────────────
-    // Step 1B: Update Premium/Discount zones
-    // ─────────────────────────────────────────────────────────────────
-    [pd_sh, pd_sl, pd_eq, pd_ote_l, pd_ote_h, pd_pct, pd_zone] = calc_pd_zones()
-    g_pd_swing_high := pd_sh
-    g_pd_swing_low := pd_sl
-    g_pd_equilibrium := pd_eq
-    g_pd_ote_low := pd_ote_l
-    g_pd_ote_high := pd_ote_h
-    g_pd_current_percent := pd_pct
-    g_pd_current_zone := pd_zone
-
     // ─────────────────────────────────────────────────────────────────
     // Step 2: Check for EQH/EQL formations
     // ─────────────────────────────────────────────────────────────────
@@ -2705,65 +2558,4 @@ if i_show_indicator
             render_htf_ifvg_boxes(g_htf2_ifvg_array, htf2_label)
 
     render_liquidity_lines()
-    // ─────────────────────────────────────────────────────────────────
-    // Step 9C: Render Premium/Discount zones (inlined — Pine v6 global var constraint)
-    // Per D-10: Lines span full chart width (structural reference)
-    // Per D-12: Right-edge price labels: "Swing H (100%)", "EQ (50%)", "Swing L (0%)"
-    // ─────────────────────────────────────────────────────────────────
-    // Delete existing PD zone drawings (delete-before-recreate pattern)
-    if not na(g_pd_premium_fill)
-        linefill.delete(g_pd_premium_fill)
-        g_pd_premium_fill := na
-    if not na(g_pd_discount_fill)
-        linefill.delete(g_pd_discount_fill)
-        g_pd_discount_fill := na
-    if not na(g_pd_ote_fill)
-        linefill.delete(g_pd_ote_fill)
-        g_pd_ote_fill := na
-    if not na(g_pd_high_line)
-        line.delete(g_pd_high_line)
-    if not na(g_pd_low_line)
-        line.delete(g_pd_low_line)
-    if not na(g_pd_eq_line)
-        line.delete(g_pd_eq_line)
-    if not na(g_pd_ote_low_line)
-        line.delete(g_pd_ote_low_line)
-    if not na(g_pd_ote_high_line)
-        line.delete(g_pd_ote_high_line)
-    if not na(g_pd_high_label)
-        label.delete(g_pd_high_label)
-    if not na(g_pd_low_label)
-        label.delete(g_pd_low_label)
-    if not na(g_pd_eq_label)
-        label.delete(g_pd_eq_label)
-    if not na(g_pd_ote_low_label)
-        label.delete(g_pd_ote_low_label)
-    if not na(g_pd_ote_high_label)
-        label.delete(g_pd_ote_high_label)
-    // Recreate if enabled and data available
-    if i_enable_pd_zones and not na(g_pd_swing_high) and not na(g_pd_swing_low) and g_pd_swing_high > g_pd_swing_low
-        int pd_right_edge = bar_index + i_extend_bars
-        int pd_left_edge = math.max(bar_index - 400, 0)
-        // Zone boundary lines (per D-10: full chart width)
-        if i_pd_show_lines
-            g_pd_high_line := line.new(pd_left_edge, g_pd_swing_high, pd_right_edge, g_pd_swing_high, color=i_pd_premium_color, style=line.style_dashed, width=1)
-            g_pd_low_line := line.new(pd_left_edge, g_pd_swing_low, pd_right_edge, g_pd_swing_low, color=i_pd_discount_color, style=line.style_dashed, width=1)
-            g_pd_eq_line := line.new(pd_left_edge, g_pd_equilibrium, pd_right_edge, g_pd_equilibrium, color=i_pd_equilibrium_color, style=line.style_solid, width=2)
-            g_pd_high_label := label.new(pd_right_edge, g_pd_swing_high, "Swing H (100%)", style=label.style_none, textcolor=i_pd_premium_color, size=size.tiny)
-            g_pd_low_label := label.new(pd_right_edge, g_pd_swing_low, "Swing L (0%)", style=label.style_none, textcolor=i_pd_discount_color, size=size.tiny)
-            g_pd_eq_label := label.new(pd_right_edge, g_pd_equilibrium, "EQ (50%)", style=label.style_none, textcolor=i_pd_equilibrium_color, size=size.tiny)
-        // Optional zone fill (per D-11: off by default, requires lines)
-        if i_pd_show_fill and i_pd_show_lines
-            g_pd_premium_fill := linefill.new(g_pd_high_line, g_pd_eq_line, i_pd_premium_color)
-            g_pd_discount_fill := linefill.new(g_pd_eq_line, g_pd_low_line, i_pd_discount_color)
-        // OTE zone lines (per D-03: two dashed lines at 62% and 79%, per D-05: off by default)
-        if i_pd_show_ote and not na(g_pd_ote_low) and not na(g_pd_ote_high)
-            color ote_line_color = color.new(#AB47BC, 70)
-            g_pd_ote_low_line := line.new(pd_left_edge, g_pd_ote_low, pd_right_edge, g_pd_ote_low, color=ote_line_color, style=line.style_dashed, width=1)
-            g_pd_ote_high_line := line.new(pd_left_edge, g_pd_ote_high, pd_right_edge, g_pd_ote_high, color=ote_line_color, style=line.style_dashed, width=1)
-            g_pd_ote_low_label := label.new(pd_right_edge, g_pd_ote_low, "OTE 62%", style=label.style_none, textcolor=ote_line_color, size=size.tiny)
-            g_pd_ote_high_label := label.new(pd_right_edge, g_pd_ote_high, "OTE 79%", style=label.style_none, textcolor=ote_line_color, size=size.tiny)
-            if i_pd_show_ote_fill
-                color ote_fill_color = color.new(#AB47BC, 90)
-                g_pd_ote_fill := linefill.new(g_pd_ote_low_line, g_pd_ote_high_line, ote_fill_color)
     render_dashboard(current_latest_ifvg)
