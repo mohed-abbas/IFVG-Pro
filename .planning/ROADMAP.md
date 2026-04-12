@@ -13,7 +13,7 @@ This roadmap covers Phase 4 of IFVG Pro: extending the indicator with premium/di
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [ ] **Phase 1: Bug Fixes & Security Consolidation** - Fix grade-inflating bugs and consolidate request.security() calls to free budget
-- [ ] **Phase 2: PD Zone Detection & Grading Integration** - HTF swing-based premium/discount zones with grading modifier and visualization
+- [ ] **Phase 2: PD Zone Detection & Grading Integration** - Premium/discount zone detection with grading modifier and visualization (approach TBD — previous attempts reverted)
 - [ ] **Phase 3: Session Tracking & Visualization** - Asia/London/NY session H/L tracking with dashboard expansion
 - [ ] **Phase 4: Alert System** - Grade-filtered entry, invalidation, and mitigation alerts with dynamic messages
 
@@ -44,13 +44,11 @@ Plans:
   3. Setups in the optimal zone (longs in discount, shorts in premium) receive a +1 quality boost; wrong-zone setups receive -1 -- observable as grade differences between same-quality setups in different zones
   4. The dashboard shows the current PD zone name (PREMIUM/DISCOUNT) with color coding and the current range percentage (0-100%)
   5. Grade distribution remains balanced after adding the PD modifier -- no single grade exceeds 40% of setups after threshold recalibration
-**Plans**: 3 plans
+**Plans**: TBD (previous plans reverted — restarting from scratch)
 **UI hint**: yes
 
 Plans:
-- [x] 02-01-PLAN.md -- PD zone engine: type extension, inputs, globals, HTF swing detection, zone calculation, grading integration
-- [x] 02-02-PLAN.md -- PD zone visualization (lines, labels, fills, OTE), tooltip update, dashboard expansion
-- [ ] 02-03-PLAN.md -- Human verification of complete Phase 2 implementation on TradingView
+- [ ] TBD
 
 ### Phase 3: Session Tracking & Visualization
 **Goal**: Traders can see Asian, London, and NY session boundaries with tracked highs/lows as liquidity reference levels
@@ -94,6 +92,22 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Bug Fixes & Security Consolidation | 2/2 | Complete | 2026-03-24 |
-| 2. PD Zone Detection & Grading Integration | 0/3 | Planned | - |
+| 2. PD Zone Detection & Grading Integration | 0/0 | Reset — restarting | - |
 | 3. Session Tracking & Visualization | 0/0 | Not started | - |
 | 4. Alert System | 0/0 | Not started | - |
+| 5. Grading System Remodel | 0/3 | Planned | - |
+
+### Phase 5: Grading System Remodel
+**Goal**: Complete redesign of the IFVG setup grading algorithm to fix ICT methodology misunderstandings and produce accurate, meaningful grades
+**Depends on**: Phase 1 (accurate grading baseline), Issues 1-7 resolved
+**Requirements**: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08, D-09, D-10, D-11, D-12
+**Success Criteria** (what must be TRUE):
+  1. Grading criteria accurately reflect ICT/SMC methodology — sweep quality, displacement, zone positioning, and FVG characteristics are weighted correctly
+  2. Grade distribution is meaningful — A+ setups are genuinely high-probability, C setups are genuinely marginal
+  3. Each grading factor is independently verifiable via labels/tooltips
+**Plans**: 3 plans
+
+Plans:
+- [ ] 05-01-PLAN.md — Extend IFVG type, create delivery detection function, rewrite assess_momentum() to int 0-2
+- [ ] 05-02-PLAN.md — Create scoring helpers and rewrite calculate_grade() with 5-criterion checklist scoring
+- [ ] 05-03-PLAN.md — Update tooltip rendering with 5-criterion display and verify on TradingView
