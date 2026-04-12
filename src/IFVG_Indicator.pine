@@ -97,6 +97,8 @@ type IFVG
     Liquidity dol       // Draw on Liquidity (target)
     bool has_sweep      // Liquidity sweep present
     string momentum     // "strong_no_chop", "neutral", "weak_or_choppy"
+    bool has_delivery   // true if delivery from prior FVG detected (per D-01)
+    string pd_zone      // "premium", "discount", "equilibrium", "neutral"
     box box_id          // Reference to drawn box
     label label_id      // Reference to IFVG label (tiny "IFVG" text)
     line be_line_id     // Reference to BE line
@@ -167,8 +169,6 @@ i_show_ith_itl      = input.bool(true, "Show ITH/ITL", group=GROUP_LIQ,
                       tooltip="Display Internal Highs and Internal Lows")
 i_max_liquidity     = input.int(4, "Max Liquidity Levels", minval=2, maxval=100, group=GROUP_LIQ,
                       tooltip="Maximum liquidity levels to track")
-i_show_swept_ithl   = input.bool(true, "Show Mitigated ITH/ITL", group=GROUP_LIQ,
-                      tooltip="Keep displaying ITH/ITL after they're mitigated (swept or broken through)")
 
 // ─────────────────────────────────────────────────────────────────────
 // EQH/EQL Detection Settings (Enhanced)
@@ -202,11 +202,9 @@ i_show_sl_level     = input.bool(true, "Show SL Levels", group=GROUP_GRADE,
                       tooltip="Display Stop Loss level lines")
 i_sl_type           = input.string("FVG Boundary", "Stop Loss Type",
                       options=["FVG Boundary", "Swing Stop"], group=GROUP_GRADE,
-                      tooltip="FVG Boundary: SL at FVG edge. Swing Stop: SL at nearest ITH/ITL before FVG (falls back to swing if no ITH/ITL found)")
+                      tooltip="FVG Boundary: SL at FVG edge. Swing Stop: SL at swing high/low before FVG")
 i_show_grade_label  = input.bool(true, "Show Grade on Label", group=GROUP_GRADE,
                       tooltip="Include grade in IFVG label")
-i_sweep_lookback    = input.int(20, "Sweep Lookback Bars", minval=5, maxval=100, group=GROUP_GRADE,
-                      tooltip="How many bars back to check for liquidity sweeps before IFVG formation")
 
 // ─────────────────────────────────────────────────────────────────────
 // Visual Settings
@@ -495,35 +493,29 @@ get_htf_bias() =>
 merge_with_existing_fvg(FVG new_fvg) =>
     bool merged = false
     int fvg_count = array.size(g_fvg_array)
-    if fvg_count > 0 and not na(atr_value)
+    if fvg_count > 0
         for j = fvg_count - 1 to 0
             FVG existing = array.get(g_fvg_array, j)
+            // Same direction, active, within 5 bars
             if existing.is_bullish == new_fvg.is_bullish and existing.status == "active"
                 int bar_distance = int(math.abs(new_fvg.end_bar - existing.end_bar))
                 if bar_distance <= 5
-                    bool price_overlap = new_fvg.bottom <= existing.top and new_fvg.top >= existing.bottom
-                    float gap_between = existing.is_bullish ? (new_fvg.bottom - existing.top) : (existing.bottom - new_fvg.top)
-                    bool price_close = gap_between <= atr_value * 0.5
-                    if price_overlap or price_close
-                        float existing_size = existing.top - existing.bottom
-                        float new_size = new_fvg.top - new_fvg.bottom
-                        float smaller = math.min(existing_size, new_size)
-                        float larger = math.max(existing_size, new_size)
-                        if smaller > 0 and larger / smaller <= 3.0
-                            float combined_top = math.max(existing.top, new_fvg.top)
-                            float combined_bottom = math.min(existing.bottom, new_fvg.bottom)
-                            existing.top := combined_top
-                            existing.bottom := combined_bottom
-                            existing.mid := (combined_top + combined_bottom) / 2
-                            existing.end_bar := int(math.max(existing.end_bar, new_fvg.end_bar))
-                            if not na(existing.box_id)
-                                box.delete(existing.box_id)
-                                existing.box_id := na
-                            if not na(existing.label_id)
-                                label.delete(existing.label_id)
-                                existing.label_id := na
-                            merged := true
-                            break
+                    // Merge: extend existing FVG to encompass new one
+                    float combined_top = math.max(existing.top, new_fvg.top)
+                    float combined_bottom = math.min(existing.bottom, new_fvg.bottom)
+                    existing.top := combined_top
+                    existing.bottom := combined_bottom
+                    existing.mid := (combined_top + combined_bottom) / 2
+                    existing.end_bar := int(math.max(existing.end_bar, new_fvg.end_bar))
+                    // Redraw the box to reflect combined zone
+                    if not na(existing.box_id)
+                        box.delete(existing.box_id)
+                        existing.box_id := na
+                    if not na(existing.label_id)
+                        label.delete(existing.label_id)
+                        existing.label_id := na
+                    merged := true
+                    break
     merged
 
 // ══════════════════════════════════════════════════════════════════════
@@ -734,6 +726,8 @@ check_htf_inversions(array<FVG> fvg_arr, array<IFVG> ifvg_arr, float htf_c, stri
                                 dol = na,
                                 has_sweep = false,
                                 momentum = "neutral",
+                                has_delivery = false,
+                                pd_zone = "neutral",
                                 box_id = na,
                                 label_id = na,
                                 be_line_id = na,
@@ -1217,60 +1211,6 @@ find_previous_swing_low(int before_bar) =>
     result
 
 // ─────────────────────────────────────────────────────────────────────
-// Find most recent ITL (Internal Low) BEFORE a bar index
-// Used for: Bullish IFVG SL placement (stop below nearest ITL)
-// Falls back to find_previous_swing_low if no ITL found
-// ─────────────────────────────────────────────────────────────────────
-find_previous_itl(int before_bar, float below_price) =>
-    float result = na
-    int closest_bar = -1
-    int arr_size = array.size(g_liquidity_array)
-    if arr_size > 0
-        for i = arr_size - 1 to 0
-            if i >= 0 and i < arr_size
-                liq = array.get(g_liquidity_array, i)
-                if liq.liq_type == "ITL" and liq.bar_idx < before_bar and liq.level < below_price and liq.bar_idx > closest_bar
-                    result := liq.level
-                    closest_bar := liq.bar_idx
-    if na(result)
-        int sw_size = array.size(g_swing_lows)
-        if sw_size > 0
-            for i = sw_size - 1 to 0
-                if i >= 0 and i < sw_size
-                    swing = array.get(g_swing_lows, i)
-                    if swing.bar_idx < before_bar and swing.price < below_price and swing.bar_idx > closest_bar
-                        result := swing.price
-                        closest_bar := swing.bar_idx
-    result
-
-// ─────────────────────────────────────────────────────────────────────
-// Find most recent ITH (Internal High) BEFORE a bar index
-// Used for: Bearish IFVG SL placement (stop above nearest ITH)
-// Falls back to find_previous_swing_high if no ITH found
-// ─────────────────────────────────────────────────────────────────────
-find_previous_ith(int before_bar, float above_price) =>
-    float result = na
-    int closest_bar = -1
-    int arr_size = array.size(g_liquidity_array)
-    if arr_size > 0
-        for i = arr_size - 1 to 0
-            if i >= 0 and i < arr_size
-                liq = array.get(g_liquidity_array, i)
-                if liq.liq_type == "ITH" and liq.bar_idx < before_bar and liq.level > above_price and liq.bar_idx > closest_bar
-                    result := liq.level
-                    closest_bar := liq.bar_idx
-    if na(result)
-        int sw_size = array.size(g_swing_highs)
-        if sw_size > 0
-            for i = sw_size - 1 to 0
-                if i >= 0 and i < sw_size
-                    swing = array.get(g_swing_highs, i)
-                    if swing.bar_idx < before_bar and swing.price > above_price and swing.bar_idx > closest_bar
-                        result := swing.price
-                        closest_bar := swing.bar_idx
-    result
-
-// ─────────────────────────────────────────────────────────────────────
 // Find nearest Draw on Liquidity (target)
 // For bullish IFVG: find BSL (highs above)
 // For bearish IFVG: find SSL (lows below)
@@ -1331,36 +1271,37 @@ check_recent_sweep(bool looking_for_bsl, int lookback_bars) =>
 // ─────────────────────────────────────────────────────────────────────
 assess_momentum(float inv_open, float inv_high, float inv_low, float inv_close) =>
     string result = "neutral"
+
     candle_body = math.abs(inv_close - inv_open)
     candle_range = inv_high - inv_low
+
     if candle_range > 0 and not na(atr_value)
         body_ratio = candle_body / candle_range
-        bool inv_bullish = inv_close > inv_open
-        int displacement_candles = 0
-        float leg_range = 0.0
-        int leg_size = 5
-        for k = 1 to leg_size
-            float cb = math.abs(close[k] - open[k])
-            float cr = high[k] - low[k]
-            if cr > 0
-                float br = cb / cr
-                bool same_dir = inv_bullish ? close[k] > open[k] : close[k] < open[k]
-                if same_dir and br > 0.5
-                    displacement_candles += 1
-        if inv_bullish
-            leg_range := inv_high - low[leg_size]
-        else
-            leg_range := high[leg_size] - inv_low
-        bool strong_inversion = body_ratio > 0.7 and candle_range > atr_value
-        bool strong_displacement = displacement_candles >= 2 and leg_range > atr_value * 1.5
-        if strong_inversion and strong_displacement
+
+        // Strong momentum: body >70% of range AND range > ATR
+        if body_ratio > 0.7 and candle_range > atr_value
             result := "strong_no_chop"
-        else if strong_inversion or strong_displacement
-            result := "strong_no_chop"
+        // Weak/choppy: small body (<30%) or very small range
         else if body_ratio < 0.3 or candle_range < atr_value * 0.5
             result := "weak_or_choppy"
+
     result
 
+// ─────────────────────────────────────────────────────────────────────
+// Calculate stop loss level
+// ─────────────────────────────────────────────────────────────────────
+calculate_stop_loss(bool is_bullish, float ifvg_bottom, float ifvg_top, float inv_close) =>
+    float result = na
+
+    // Default: Fail Stop - below/above the inversion candle body close
+    if is_bullish
+        // For bullish IFVG, stop below the zone
+        result := ifvg_bottom
+    else
+        // For bearish IFVG, stop above the zone
+        result := ifvg_top
+
+    result
 
 // ─────────────────────────────────────────────────────────────────────
 // Check if an FVG is singular (no same-direction FVG nearby AND overlapping)
@@ -1526,7 +1467,7 @@ check_inversions() =>
                             // ═══════════════════════════════════════════════════════════
                             // SL LEVEL - Stop Loss placement (user configurable)
                             // Option 1: FVG Boundary (top for bearish, bottom for bullish)
-                            // Option 2: Swing Stop (ITH/ITL before FVG, falls back to swing)
+                            // Option 2: Swing Stop (swing high for bearish, swing low for bullish)
                             // ═══════════════════════════════════════════════════════════
                             float sl_level = na
                             string sl_type_used = i_sl_type == "Swing Stop" ? "swing" : "fvg_boundary"
@@ -1534,18 +1475,18 @@ check_inversions() =>
                             if ifvg_is_bullish
                                 // Bullish IFVG (long): SL is BELOW entry
                                 if i_sl_type == "Swing Stop"
-                                    sl_level := find_previous_itl(bar_index, fvg.bottom)
+                                    sl_level := find_previous_swing_low(fvg.start_bar)
                                     if na(sl_level)
-                                        sl_level := fvg.bottom
+                                        sl_level := fvg.bottom  // Fallback to FVG boundary
                                         sl_type_used := "fvg_boundary"
                                 else
                                     sl_level := fvg.bottom
                             else
                                 // Bearish IFVG (short): SL is ABOVE entry
                                 if i_sl_type == "Swing Stop"
-                                    sl_level := find_previous_ith(bar_index, fvg.top)
+                                    sl_level := find_previous_swing_high(fvg.start_bar)
                                     if na(sl_level)
-                                        sl_level := fvg.top
+                                        sl_level := fvg.top  // Fallback to FVG boundary
                                         sl_type_used := "fvg_boundary"
                                 else
                                     sl_level := fvg.top
@@ -1559,10 +1500,10 @@ check_inversions() =>
                             // ═══════════════════════════════════════════════════════════
                             bool entry_valid = true
                             if ifvg_is_bullish
-                                // Bullish: Invalid if price touched or went below SL level
+                                // Bullish: Invalid if price went BELOW SL level
                                 entry_valid := low > sl_level
                             else
-                                // Bearish: Invalid if price touched or went above SL level
+                                // Bearish: Invalid if price went ABOVE SL level
                                 entry_valid := high < sl_level
 
                             // Find DOL (target)
@@ -1570,7 +1511,7 @@ check_inversions() =>
                             bool has_dol = not na(dol)
 
                             // Check for recent sweep
-                            bool has_sweep = check_recent_sweep(not ifvg_is_bullish, i_sweep_lookback)
+                            bool has_sweep = check_recent_sweep(not ifvg_is_bullish, 20)
 
                             // Assess momentum
                             string momentum = assess_momentum(open, high, low, close)
@@ -1598,6 +1539,8 @@ check_inversions() =>
                                 dol = dol,
                                 has_sweep = has_sweep,
                                 momentum = momentum,
+                                has_delivery = false,
+                                pd_zone = "neutral",
                                 box_id = na,
                                 label_id = na,
                                 be_line_id = na,
@@ -1640,12 +1583,12 @@ update_be_status() =>
                     // Check if SL has been hit (invalidates entry)
                     if ifvg.entry_valid
                         if ifvg.is_bullish
-                            // Bullish: Invalid if price went BELOW or touched SL level
-                            if low <= ifvg.sl_level
+                            // Bullish: Invalid if price went BELOW SL level
+                            if low < ifvg.sl_level
                                 ifvg.entry_valid := false
                         else
-                            // Bearish: Invalid if price went ABOVE or touched SL level
-                            if high >= ifvg.sl_level
+                            // Bearish: Invalid if price went ABOVE SL level
+                            if high > ifvg.sl_level
                                 ifvg.entry_valid := false
 
 // ─────────────────────────────────────────────────────────────────────
@@ -2121,16 +2064,6 @@ render_liquidity_lines() =>
                             label.delete(liq.label_id)
                             liq.label_id := na
                         continue
-                // Skip mitigated ITH/ITL (swept OR broken through) if user doesn't want to see them
-                if (liq.is_swept or not liq.is_valid) and not i_show_swept_ithl
-                    if liq.liq_type == "ITH" or liq.liq_type == "ITL"
-                        if not na(liq.line_id)
-                            line.delete(liq.line_id)
-                            liq.line_id := na
-                        if not na(liq.label_id)
-                            label.delete(liq.label_id)
-                            liq.label_id := na
-                        continue
 
                 // Skip relative EQL/EQH if user only wants to see perfect ones
                 // NOTE: Data is still collected for grading algorithms, only rendering is filtered
@@ -2174,15 +2107,8 @@ render_liquidity_lines() =>
                         line_style := line.style_solid
 
                 else if liq.liq_type == "ITH" or liq.liq_type == "ITL"
-                    if liq.is_swept
-                        line_color := color.new(i_ithl_color, 70)
-                        line_style := line.style_dotted
-                    else if not liq.is_valid
-                        line_color := color.new(color.gray, 70)
-                        line_style := line.style_dotted
-                    else
-                        line_color := i_ithl_color
-                        line_style := line.style_dashed
+                    line_color := liq.is_swept ? color.new(i_ithl_color, 70) : i_ithl_color
+                    line_style := line.style_dashed
 
                 right_edge = bar_index + i_extend_bars
 
