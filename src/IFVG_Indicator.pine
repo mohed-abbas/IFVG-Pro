@@ -1438,7 +1438,55 @@ check_delivery_from_fvg(bool ifvg_is_bullish, int lookback) =>
     result
 
 // ─────────────────────────────────────────────────────────────────────
-// Full grading algorithm
+// Score target clarity (DOL quality) 0-2 per D-05 criterion 3
+// Score 2: clear DOL (perfect quality or multi-touch)
+// Score 1: weak target (single-touch relative quality)
+// Score 0: no DOL target found
+// ─────────────────────────────────────────────────────────────────────
+score_target_clarity(Liquidity dol_target) =>
+    int result = 0
+    if not na(dol_target)
+        if dol_target.quality == "perfect" or dol_target.touch_count >= 2
+            result := 2
+        else
+            result := 1
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Score FVG singularity 0-2 per D-05 criterion 4
+// Score 2: singular and obvious (large gap >= 0.5 ATR)
+// Score 1: singular but small/inconspicuous
+// Score 0: not singular (overlapping FVGs nearby)
+// ─────────────────────────────────────────────────────────────────────
+score_singularity(bool is_singular, float fvg_size, float atr_val) =>
+    int result = 0
+    if is_singular
+        if not na(atr_val) and fvg_size >= atr_val * 0.5
+            result := 2
+        else
+            result := 1
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Score PD zone positioning 0-2 per D-09
+// Score 2: correct zone (bullish in discount, bearish in premium)
+// Score 1: neutral/equilibrium or no dealing range detected
+// Score 0: wrong zone (bullish in premium, bearish in discount)
+// NOTE: Until PD zone detection is re-implemented, pd_zone is always
+// "neutral" so this always returns 1, making A+ unreachable via D-06.
+// ─────────────────────────────────────────────────────────────────────
+score_pd_zone(string pd_zone, bool ifvg_is_bullish) =>
+    int result = 1
+    if pd_zone == "discount"
+        result := ifvg_is_bullish ? 2 : 0
+    else if pd_zone == "premium"
+        result := ifvg_is_bullish ? 0 : 2
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Full grading algorithm — checklist scoring per D-05, D-06, D-07
+// Five criteria each scored 0-2, total 0-10
+// A+ hard gates: sweep_delivery=2 AND pd_score=2 AND total>=9
 // ─────────────────────────────────────────────────────────────────────
 calculate_grade(bool has_sweep, string momentum, bool has_dol, bool fvg_singular) =>
     string result = "C"
