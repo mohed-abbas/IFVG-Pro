@@ -205,6 +205,8 @@ i_sl_type           = input.string("FVG Boundary", "Stop Loss Type",
                       tooltip="FVG Boundary: SL at FVG edge. Swing Stop: SL at nearest ITH/ITL before FVG (falls back to swing if no ITH/ITL found)")
 i_show_grade_label  = input.bool(true, "Show Grade on Label", group=GROUP_GRADE,
                       tooltip="Include grade in IFVG label")
+i_sweep_lookback    = input.int(20, "Sweep Lookback Bars", minval=5, maxval=100, group=GROUP_GRADE,
+                      tooltip="How many bars back to check for liquidity sweeps before IFVG formation")
 
 // ─────────────────────────────────────────────────────────────────────
 // Visual Settings
@@ -1323,37 +1325,36 @@ check_recent_sweep(bool looking_for_bsl, int lookback_bars) =>
 // ─────────────────────────────────────────────────────────────────────
 assess_momentum(float inv_open, float inv_high, float inv_low, float inv_close) =>
     string result = "neutral"
-
     candle_body = math.abs(inv_close - inv_open)
     candle_range = inv_high - inv_low
-
     if candle_range > 0 and not na(atr_value)
         body_ratio = candle_body / candle_range
-
-        // Strong momentum: body >70% of range AND range > ATR
-        if body_ratio > 0.7 and candle_range > atr_value
+        bool inv_bullish = inv_close > inv_open
+        int displacement_candles = 0
+        float leg_range = 0.0
+        int leg_size = 5
+        for k = 1 to leg_size
+            float cb = math.abs(close[k] - open[k])
+            float cr = high[k] - low[k]
+            if cr > 0
+                float br = cb / cr
+                bool same_dir = inv_bullish ? close[k] > open[k] : close[k] < open[k]
+                if same_dir and br > 0.5
+                    displacement_candles += 1
+        if inv_bullish
+            leg_range := inv_high - low[leg_size]
+        else
+            leg_range := high[leg_size] - inv_low
+        bool strong_inversion = body_ratio > 0.7 and candle_range > atr_value
+        bool strong_displacement = displacement_candles >= 2 and leg_range > atr_value * 1.5
+        if strong_inversion and strong_displacement
             result := "strong_no_chop"
-        // Weak/choppy: small body (<30%) or very small range
+        else if strong_inversion or strong_displacement
+            result := "strong_no_chop"
         else if body_ratio < 0.3 or candle_range < atr_value * 0.5
             result := "weak_or_choppy"
-
     result
 
-// ─────────────────────────────────────────────────────────────────────
-// Calculate stop loss level
-// ─────────────────────────────────────────────────────────────────────
-calculate_stop_loss(bool is_bullish, float ifvg_bottom, float ifvg_top, float inv_close) =>
-    float result = na
-
-    // Default: Fail Stop - below/above the inversion candle body close
-    if is_bullish
-        // For bullish IFVG, stop below the zone
-        result := ifvg_bottom
-    else
-        // For bearish IFVG, stop above the zone
-        result := ifvg_top
-
-    result
 
 // ─────────────────────────────────────────────────────────────────────
 // Check if an FVG is singular (no same-direction FVG nearby AND overlapping)
@@ -1552,10 +1553,10 @@ check_inversions() =>
                             // ═══════════════════════════════════════════════════════════
                             bool entry_valid = true
                             if ifvg_is_bullish
-                                // Bullish: Invalid if price went BELOW SL level
+                                // Bullish: Invalid if price touched or went below SL level
                                 entry_valid := low > sl_level
                             else
-                                // Bearish: Invalid if price went ABOVE SL level
+                                // Bearish: Invalid if price touched or went above SL level
                                 entry_valid := high < sl_level
 
                             // Find DOL (target)
@@ -1563,7 +1564,7 @@ check_inversions() =>
                             bool has_dol = not na(dol)
 
                             // Check for recent sweep
-                            bool has_sweep = check_recent_sweep(not ifvg_is_bullish, 20)
+                            bool has_sweep = check_recent_sweep(not ifvg_is_bullish, i_sweep_lookback)
 
                             // Assess momentum
                             string momentum = assess_momentum(open, high, low, close)
@@ -1633,12 +1634,12 @@ update_be_status() =>
                     // Check if SL has been hit (invalidates entry)
                     if ifvg.entry_valid
                         if ifvg.is_bullish
-                            // Bullish: Invalid if price went BELOW SL level
-                            if low < ifvg.sl_level
+                            // Bullish: Invalid if price went BELOW or touched SL level
+                            if low <= ifvg.sl_level
                                 ifvg.entry_valid := false
                         else
-                            // Bearish: Invalid if price went ABOVE SL level
-                            if high > ifvg.sl_level
+                            // Bearish: Invalid if price went ABOVE or touched SL level
+                            if high >= ifvg.sl_level
                                 ifvg.entry_valid := false
 
 // ─────────────────────────────────────────────────────────────────────
