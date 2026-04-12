@@ -1267,24 +1267,50 @@ check_recent_sweep(bool looking_for_bsl, int lookback_bars) =>
     result
 
 // ─────────────────────────────────────────────────────────────────────
-// Assess momentum quality of the inversion candle
+// Assess momentum quality of the inversion candle (per D-08)
+// Returns int: 0 = weak/choppy, 1 = moderate, 2 = strong displacement
+// Score 2 requires BOTH strong inversion AND strong displacement
+// Score 1 requires EITHER strong signal OR moderate candle metrics
 // ─────────────────────────────────────────────────────────────────────
 assess_momentum(float inv_open, float inv_high, float inv_low, float inv_close) =>
-    string result = "neutral"
-
+    int result = 0
     candle_body = math.abs(inv_close - inv_open)
     candle_range = inv_high - inv_low
-
     if candle_range > 0 and not na(atr_value)
         body_ratio = candle_body / candle_range
-
-        // Strong momentum: body >70% of range AND range > ATR
-        if body_ratio > 0.7 and candle_range > atr_value
-            result := "strong_no_chop"
-        // Weak/choppy: small body (<30%) or very small range
+        bool inv_bullish = inv_close > inv_open
+        // Count displacement candles (same-direction, body > 50%) in preceding 5 bars
+        int displacement_candles = 0
+        float leg_range = 0.0
+        int leg_size = 5
+        for k = 1 to leg_size
+            float cb = math.abs(close[k] - open[k])
+            float cr = high[k] - low[k]
+            if cr > 0
+                float br = cb / cr
+                bool same_dir = inv_bullish ? close[k] > open[k] : close[k] < open[k]
+                if same_dir and br > 0.5
+                    displacement_candles += 1
+        if inv_bullish
+            leg_range := inv_high - low[leg_size]
+        else
+            leg_range := high[leg_size] - inv_low
+        bool strong_inversion = body_ratio > 0.7 and candle_range > atr_value
+        bool strong_displacement = displacement_candles >= 2 and leg_range > atr_value * 1.5
+        // D-08 scoring:
+        // Score 2: BOTH strong inversion AND strong displacement
+        if strong_inversion and strong_displacement
+            result := 2
+        // Score 1: EITHER strong inversion OR displacement (not both)
+        //          OR moderate candle (body > 50% AND range > 0.7x ATR)
+        else if strong_inversion or strong_displacement
+            result := 1
+        else if body_ratio > 0.5 and candle_range > atr_value * 0.7
+            result := 1
+        // Score 0: weak/choppy (body < 30% OR range < 0.5x ATR)
         else if body_ratio < 0.3 or candle_range < atr_value * 0.5
-            result := "weak_or_choppy"
-
+            result := 0
+        // else stays 0 (default)
     result
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1596,12 +1622,14 @@ check_inversions() =>
                             // Check delivery from prior FVG (per D-01)
                             bool has_delivery = check_delivery_from_fvg(ifvg_is_bullish, 20)
 
-                            // Assess momentum
-                            string momentum = assess_momentum(open, high, low, close)
+                            // Assess momentum (returns int 0-2 per D-08)
+                            int momentum_score = assess_momentum(open, high, low, close)
+                            // Map int score to string for backward compatibility (until Plan 03 rewrites rendering)
+                            string momentum_str = momentum_score == 2 ? "strong_no_chop" : (momentum_score == 0 ? "weak_or_choppy" : "neutral")
 
                             // Calculate grade
                             bool fvg_singular = is_fvg_singular(fvg)
-                            string grade = calculate_grade(has_sweep, momentum, has_dol, fvg_singular)
+                            string grade = calculate_grade(has_sweep, momentum_str, has_dol, fvg_singular)
 
                             // Create IFVG
                             new_ifvg = IFVG.new(
@@ -1621,7 +1649,7 @@ check_inversions() =>
                                 sl_type = sl_type_used,
                                 dol = dol,
                                 has_sweep = has_sweep,
-                                momentum = momentum,
+                                momentum = momentum_str,
                                 has_delivery = has_delivery,
                                 pd_zone = "neutral",
                                 box_id = na,
