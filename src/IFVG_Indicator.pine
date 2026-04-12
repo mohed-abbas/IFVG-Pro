@@ -495,29 +495,35 @@ get_htf_bias() =>
 merge_with_existing_fvg(FVG new_fvg) =>
     bool merged = false
     int fvg_count = array.size(g_fvg_array)
-    if fvg_count > 0
+    if fvg_count > 0 and not na(atr_value)
         for j = fvg_count - 1 to 0
             FVG existing = array.get(g_fvg_array, j)
-            // Same direction, active, within 5 bars
             if existing.is_bullish == new_fvg.is_bullish and existing.status == "active"
                 int bar_distance = int(math.abs(new_fvg.end_bar - existing.end_bar))
                 if bar_distance <= 5
-                    // Merge: extend existing FVG to encompass new one
-                    float combined_top = math.max(existing.top, new_fvg.top)
-                    float combined_bottom = math.min(existing.bottom, new_fvg.bottom)
-                    existing.top := combined_top
-                    existing.bottom := combined_bottom
-                    existing.mid := (combined_top + combined_bottom) / 2
-                    existing.end_bar := int(math.max(existing.end_bar, new_fvg.end_bar))
-                    // Redraw the box to reflect combined zone
-                    if not na(existing.box_id)
-                        box.delete(existing.box_id)
-                        existing.box_id := na
-                    if not na(existing.label_id)
-                        label.delete(existing.label_id)
-                        existing.label_id := na
-                    merged := true
-                    break
+                    bool price_overlap = new_fvg.bottom <= existing.top and new_fvg.top >= existing.bottom
+                    float gap_between = existing.is_bullish ? (new_fvg.bottom - existing.top) : (existing.bottom - new_fvg.top)
+                    bool price_close = gap_between <= atr_value * 0.5
+                    if price_overlap or price_close
+                        float existing_size = existing.top - existing.bottom
+                        float new_size = new_fvg.top - new_fvg.bottom
+                        float smaller = math.min(existing_size, new_size)
+                        float larger = math.max(existing_size, new_size)
+                        if smaller > 0 and larger / smaller <= 3.0
+                            float combined_top = math.max(existing.top, new_fvg.top)
+                            float combined_bottom = math.min(existing.bottom, new_fvg.bottom)
+                            existing.top := combined_top
+                            existing.bottom := combined_bottom
+                            existing.mid := (combined_top + combined_bottom) / 2
+                            existing.end_bar := int(math.max(existing.end_bar, new_fvg.end_bar))
+                            if not na(existing.box_id)
+                                box.delete(existing.box_id)
+                                existing.box_id := na
+                            if not na(existing.label_id)
+                                label.delete(existing.label_id)
+                                existing.label_id := na
+                            merged := true
+                            break
     merged
 
 // ══════════════════════════════════════════════════════════════════════
