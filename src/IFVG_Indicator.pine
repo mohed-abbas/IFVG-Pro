@@ -1488,66 +1488,39 @@ score_pd_zone(string pd_zone, bool ifvg_is_bullish) =>
 // Five criteria each scored 0-2, total 0-10
 // A+ hard gates: sweep_delivery=2 AND pd_score=2 AND total>=9
 // ─────────────────────────────────────────────────────────────────────
-calculate_grade(bool has_sweep, string momentum, bool has_dol, bool fvg_singular) =>
+calculate_grade(bool has_sweep, bool has_delivery, int momentum_score, Liquidity dol_target, bool fvg_singular, float fvg_size, string pd_zone, bool ifvg_is_bullish) =>
+    // ── Criterion 1: Sweep + Delivery (0-2) per D-05 ──
+    int sweep_delivery_score = 0
+    if has_sweep and has_delivery
+        sweep_delivery_score := 2
+    else if has_sweep or has_delivery
+        sweep_delivery_score := 1
+    // ── Criterion 2: Momentum (0-2) — already scored by assess_momentum() ──
+    // momentum_score is 0, 1, or 2 directly
+    // ── Criterion 3: Target Clarity (0-2) ──
+    int target_score = score_target_clarity(dol_target)
+    // ── Criterion 4: FVG Singularity (0-2) ──
+    int singular_score = score_singularity(fvg_singular, fvg_size, atr_value)
+    // ── Criterion 5: PD Zone (0-2) per D-09 ──
+    int pd_score = score_pd_zone(pd_zone, ifvg_is_bullish)
+    // ── Total Score (0-10) ──
+    int total = sweep_delivery_score + momentum_score + target_score + singular_score + pd_score
+    // ── Grade Mapping per D-05, D-07 ──
     string result = "C"
-
-    // ═══════════════════════════════════════════════════════════
-    // STEP 1: MANDATORY CRITERIA → DETERMINE TIER
-    // ═══════════════════════════════════════════════════════════
-
-    // Must have clear DOL (target)
-    if not has_dol
-        result := "C"
-    else
-        string tier = "C"
-
-        // Tier based on liquidity context
-        if has_sweep
-            tier := "A"
-        else
-            tier := "B"
-
-        // ═══════════════════════════════════════════════════════
-        // STEP 2: QUALITY CRITERIA → DETERMINE MODIFIER
-        // ═══════════════════════════════════════════════════════
-
-        int quality_score = 0
-
-        // Momentum (+1 / -1)
-        if momentum == "strong_no_chop"
-            quality_score := quality_score + 1
-        else if momentum == "weak_or_choppy"
-            quality_score := quality_score - 1
-
-        // FVG Clarity (+1 / -1)
-        if fvg_singular
-            quality_score := quality_score + 1
-        else
-            quality_score := quality_score - 1
-
-        // ═══════════════════════════════════════════════════════
-        // STEP 3: COMBINE TIER + MODIFIER
-        // ═══════════════════════════════════════════════════════
-
-        if tier == "A"
-            if quality_score >= 2
-                result := "A+"
-            else if quality_score >= 1
-                result := "A"
-            else if quality_score >= 0
-                result := "A-"
-            else
-                result := "B+"
-        else if tier == "B"
-            if quality_score >= 1
-                result := "B+"
-            else if quality_score >= 0
-                result := "B"
-            else
-                result := "B-"
-        else
-            result := "C"
-
+    // A+ hard gates per D-06: sweep_delivery=2 AND pd_score=2 AND total>=9
+    if total >= 9 and sweep_delivery_score == 2 and pd_score == 2
+        result := "A+"
+    else if total >= 7
+        result := "A"
+    else if total == 6
+        result := "A-"
+    else if total == 5
+        result := "B+"
+    else if total >= 3
+        result := "B"
+    else if total == 2
+        result := "B-"
+    // else total 0-1 stays "C"
     result
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1662,7 +1635,6 @@ check_inversions() =>
 
                             // Find DOL (target)
                             Liquidity dol = find_dol(ifvg_is_bullish, close)
-                            bool has_dol = not na(dol)
 
                             // Check for recent sweep
                             bool has_sweep = check_recent_sweep(not ifvg_is_bullish, 20)
@@ -1675,9 +1647,10 @@ check_inversions() =>
                             // Map int score to string for backward compatibility (until Plan 03 rewrites rendering)
                             string momentum_str = momentum_score == 2 ? "strong_no_chop" : (momentum_score == 0 ? "weak_or_choppy" : "neutral")
 
-                            // Calculate grade
+                            // Calculate grade (checklist scoring per D-05, D-06, D-07)
                             bool fvg_singular = is_fvg_singular(fvg)
-                            string grade = calculate_grade(has_sweep, momentum_str, has_dol, fvg_singular)
+                            float fvg_size = fvg.top - fvg.bottom
+                            string grade = calculate_grade(has_sweep, has_delivery, momentum_score, dol, fvg_singular, fvg_size, "neutral", ifvg_is_bullish)
 
                             // Create IFVG
                             new_ifvg = IFVG.new(
