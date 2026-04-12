@@ -126,6 +126,32 @@
 
 ---
 
+## Delivery Timeframe Source (Update Session)
+
+### Which timeframe FVGs to search for delivery
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| HTF FVGs only | Search only HTF arrays. LTF FVGs are noise. | |
+| Both HTF and LTF | HTF first, fall back to LTF. Both count equally. | ✓ |
+| Same timeframe as IFVG | Match the IFVG's own timeframe. | |
+| Configurable | Add input for delivery TF source. | |
+
+**User's choice:** Both HTF and LTF with priority cascade
+**Notes:** First check HTF FVGs (from configured i_htf_timeframe/i_htf2_timeframe), fall back to LTF if no HTF delivery found. If current TF = configured HTF, just use current TF. Uses existing HTF parameters — no new inputs.
+
+### Scoring weight by timeframe
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Equal once detected | Delivery is delivery regardless of source TF. | ✓ |
+| HTF scores higher | HTF delivery = full score, LTF = partial. | |
+
+**User's choice:** Equal once detected
+**Notes:** Priority cascade determines search order, not scoring weight.
+
+---
+
 ## Claude's Discretion
 
 - Target clarity scoring thresholds

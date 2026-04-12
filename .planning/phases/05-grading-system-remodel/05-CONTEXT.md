@@ -40,6 +40,10 @@ Complete redesign of the IFVG grading algorithm to accurately reflect the Dodgys
 - **D-09:** PD zone scored 0-2: Correct zone = 2 (bullish IFVG in discount, bearish IFVG in premium), neutral/equilibrium = 1 (in equilibrium zone or no dealing range detected), wrong zone = 0 (bullish IFVG in premium, bearish IFVG in discount).
 - **D-10:** Correct PD zone is a hard gate for A+ (see D-06). Without correct zone positioning, A+ is unreachable regardless of total score.
 
+### Delivery Timeframe Source
+- **D-11:** Delivery detection uses a priority cascade: first check HTF FVGs (from the configured `i_htf_timeframe` / `i_htf2_timeframe` parameters — `g_htf_fvg_array` and `g_htf2_fvg_array`), then fall back to LTF FVGs (`g_fvg_array`) if no HTF delivery found. If the current timeframe equals the configured HTF, only check the current timeframe (no redundant search). This uses the existing HTF inputs — no new timeframe configuration needed.
+- **D-12:** HTF delivery and LTF delivery are scored equally once detected. No weight difference — delivery is delivery regardless of source timeframe. The priority cascade determines search order, not scoring weight.
+
 ### Claude's Discretion
 - Target clarity scoring thresholds (what distinguishes "clear DOL" score 2 from "weak target" score 1)
 - FVG singularity scoring (how to distinguish "singular and obvious" score 2 from "singular but not obvious" score 1 — likely based on FVG size relative to ATR)
@@ -92,7 +96,7 @@ Complete redesign of the IFVG grading algorithm to accurately reflect the Dodgys
 - `check_inversions()` call site — Add delivery detection call, update parameter passing
 
 ### Needs Creation
-- `check_delivery_from_fvg()` — New function to detect delivery from prior FVG with body respect check
+- `check_delivery_from_fvg()` — New function to detect delivery from prior FVG with body respect check. Must search HTF arrays first (`g_htf_fvg_array`, `g_htf2_fvg_array`), then fall back to LTF (`g_fvg_array`)
 - Potentially `score_target_clarity()` — Separate scoring for DOL target quality (currently binary has_dol)
 - Potentially `score_singularity()` — Map singularity to 0-2 (currently binary)
 
