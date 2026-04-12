@@ -1332,6 +1332,86 @@ is_fvg_singular(FVG source_fvg) =>
     singular
 
 // ─────────────────────────────────────────────────────────────────────
+// Check if delivery from a prior FVG occurred before the IFVG (per D-01)
+// Searches HTF arrays first (priority cascade per D-11), then LTF.
+// Returns true if an active opposite-direction FVG was found where
+// candle bodies respected the zone (no body close through it per D-04).
+// ─────────────────────────────────────────────────────────────────────
+check_delivery_from_fvg(bool ifvg_is_bullish, int lookback) =>
+    bool result = false
+    // For bullish IFVG, look for bearish source FVG (price delivered DOWN from it)
+    // For bearish IFVG, look for bullish source FVG (price delivered UP from it)
+    bool look_for_bullish = not ifvg_is_bullish
+    // Priority cascade: HTF1 -> HTF2 -> LTF (per D-11, D-12)
+    // Check each array; if match found, return immediately
+    // Helper: check a single FVG array for delivery
+    // We inline the logic for each array to avoid Pine Script limitations
+    // --- HTF1 array ---
+    if not result and array.size(g_htf_fvg_array) > 0
+        for i = array.size(g_htf_fvg_array) - 1 to 0
+            if not result and i >= 0 and i < array.size(g_htf_fvg_array)
+                FVG candidate = array.get(g_htf_fvg_array, i)
+                if candidate.is_bullish == look_for_bullish and candidate.status == "active"
+                    int bar_dist = bar_index - candidate.end_bar
+                    if bar_dist > 0 and bar_dist <= lookback
+                        // Body respect check (per D-04): no body close through zone
+                        bool bodies_respected = true
+                        int check_bars = math.min(bar_dist, 50)
+                        for k = 1 to check_bars
+                            if bodies_respected
+                                if look_for_bullish
+                                    // Bullish source FVG: no body close below bottom
+                                    if close[k] < candidate.bottom
+                                        bodies_respected := false
+                                else
+                                    // Bearish source FVG: no body close above top
+                                    if close[k] > candidate.top
+                                        bodies_respected := false
+                        if bodies_respected
+                            result := true
+    // --- HTF2 array ---
+    if not result and array.size(g_htf2_fvg_array) > 0
+        for i = array.size(g_htf2_fvg_array) - 1 to 0
+            if not result and i >= 0 and i < array.size(g_htf2_fvg_array)
+                FVG candidate = array.get(g_htf2_fvg_array, i)
+                if candidate.is_bullish == look_for_bullish and candidate.status == "active"
+                    int bar_dist = bar_index - candidate.end_bar
+                    if bar_dist > 0 and bar_dist <= lookback
+                        bool bodies_respected = true
+                        int check_bars = math.min(bar_dist, 50)
+                        for k = 1 to check_bars
+                            if bodies_respected
+                                if look_for_bullish
+                                    if close[k] < candidate.bottom
+                                        bodies_respected := false
+                                else
+                                    if close[k] > candidate.top
+                                        bodies_respected := false
+                        if bodies_respected
+                            result := true
+    // --- LTF array ---
+    if not result and array.size(g_fvg_array) > 0
+        for i = array.size(g_fvg_array) - 1 to 0
+            if not result and i >= 0 and i < array.size(g_fvg_array)
+                FVG candidate = array.get(g_fvg_array, i)
+                if candidate.is_bullish == look_for_bullish and candidate.status == "active"
+                    int bar_dist = bar_index - candidate.end_bar
+                    if bar_dist > 0 and bar_dist <= lookback
+                        bool bodies_respected = true
+                        int check_bars = math.min(bar_dist, 50)
+                        for k = 1 to check_bars
+                            if bodies_respected
+                                if look_for_bullish
+                                    if close[k] < candidate.bottom
+                                        bodies_respected := false
+                                else
+                                    if close[k] > candidate.top
+                                        bodies_respected := false
+                        if bodies_respected
+                            result := true
+    result
+
+// ─────────────────────────────────────────────────────────────────────
 // Full grading algorithm
 // ─────────────────────────────────────────────────────────────────────
 calculate_grade(bool has_sweep, string momentum, bool has_dol, bool fvg_singular) =>
@@ -1513,6 +1593,9 @@ check_inversions() =>
                             // Check for recent sweep
                             bool has_sweep = check_recent_sweep(not ifvg_is_bullish, 20)
 
+                            // Check delivery from prior FVG (per D-01)
+                            bool has_delivery = check_delivery_from_fvg(ifvg_is_bullish, 20)
+
                             // Assess momentum
                             string momentum = assess_momentum(open, high, low, close)
 
@@ -1539,7 +1622,7 @@ check_inversions() =>
                                 dol = dol,
                                 has_sweep = has_sweep,
                                 momentum = momentum,
-                                has_delivery = false,
+                                has_delivery = has_delivery,
                                 pd_zone = "neutral",
                                 box_id = na,
                                 label_id = na,
