@@ -167,6 +167,8 @@ i_show_ith_itl      = input.bool(true, "Show ITH/ITL", group=GROUP_LIQ,
                       tooltip="Display Internal Highs and Internal Lows")
 i_max_liquidity     = input.int(4, "Max Liquidity Levels", minval=2, maxval=100, group=GROUP_LIQ,
                       tooltip="Maximum liquidity levels to track")
+i_show_swept_ithl   = input.bool(true, "Show Mitigated ITH/ITL", group=GROUP_LIQ,
+                      tooltip="Keep displaying ITH/ITL after they're mitigated (swept or broken through)")
 
 // ─────────────────────────────────────────────────────────────────────
 // EQH/EQL Detection Settings (Enhanced)
@@ -200,7 +202,7 @@ i_show_sl_level     = input.bool(true, "Show SL Levels", group=GROUP_GRADE,
                       tooltip="Display Stop Loss level lines")
 i_sl_type           = input.string("FVG Boundary", "Stop Loss Type",
                       options=["FVG Boundary", "Swing Stop"], group=GROUP_GRADE,
-                      tooltip="FVG Boundary: SL at FVG edge. Swing Stop: SL at swing high/low before FVG")
+                      tooltip="FVG Boundary: SL at FVG edge. Swing Stop: SL at nearest ITH/ITL before FVG (falls back to swing if no ITH/ITL found)")
 i_show_grade_label  = input.bool(true, "Show Grade on Label", group=GROUP_GRADE,
                       tooltip="Include grade in IFVG label")
 
@@ -1207,6 +1209,60 @@ find_previous_swing_low(int before_bar) =>
     result
 
 // ─────────────────────────────────────────────────────────────────────
+// Find most recent ITL (Internal Low) BEFORE a bar index
+// Used for: Bullish IFVG SL placement (stop below nearest ITL)
+// Falls back to find_previous_swing_low if no ITL found
+// ─────────────────────────────────────────────────────────────────────
+find_previous_itl(int before_bar, float below_price) =>
+    float result = na
+    int closest_bar = -1
+    int arr_size = array.size(g_liquidity_array)
+    if arr_size > 0
+        for i = arr_size - 1 to 0
+            if i >= 0 and i < arr_size
+                liq = array.get(g_liquidity_array, i)
+                if liq.liq_type == "ITL" and liq.bar_idx < before_bar and liq.level < below_price and liq.bar_idx > closest_bar
+                    result := liq.level
+                    closest_bar := liq.bar_idx
+    if na(result)
+        int sw_size = array.size(g_swing_lows)
+        if sw_size > 0
+            for i = sw_size - 1 to 0
+                if i >= 0 and i < sw_size
+                    swing = array.get(g_swing_lows, i)
+                    if swing.bar_idx < before_bar and swing.price < below_price and swing.bar_idx > closest_bar
+                        result := swing.price
+                        closest_bar := swing.bar_idx
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Find most recent ITH (Internal High) BEFORE a bar index
+// Used for: Bearish IFVG SL placement (stop above nearest ITH)
+// Falls back to find_previous_swing_high if no ITH found
+// ─────────────────────────────────────────────────────────────────────
+find_previous_ith(int before_bar, float above_price) =>
+    float result = na
+    int closest_bar = -1
+    int arr_size = array.size(g_liquidity_array)
+    if arr_size > 0
+        for i = arr_size - 1 to 0
+            if i >= 0 and i < arr_size
+                liq = array.get(g_liquidity_array, i)
+                if liq.liq_type == "ITH" and liq.bar_idx < before_bar and liq.level > above_price and liq.bar_idx > closest_bar
+                    result := liq.level
+                    closest_bar := liq.bar_idx
+    if na(result)
+        int sw_size = array.size(g_swing_highs)
+        if sw_size > 0
+            for i = sw_size - 1 to 0
+                if i >= 0 and i < sw_size
+                    swing = array.get(g_swing_highs, i)
+                    if swing.bar_idx < before_bar and swing.price > above_price and swing.bar_idx > closest_bar
+                        result := swing.price
+                        closest_bar := swing.bar_idx
+    result
+
+// ─────────────────────────────────────────────────────────────────────
 // Find nearest Draw on Liquidity (target)
 // For bullish IFVG: find BSL (highs above)
 // For bearish IFVG: find SSL (lows below)
@@ -1463,7 +1519,7 @@ check_inversions() =>
                             // ═══════════════════════════════════════════════════════════
                             // SL LEVEL - Stop Loss placement (user configurable)
                             // Option 1: FVG Boundary (top for bearish, bottom for bullish)
-                            // Option 2: Swing Stop (swing high for bearish, swing low for bullish)
+                            // Option 2: Swing Stop (ITH/ITL before FVG, falls back to swing)
                             // ═══════════════════════════════════════════════════════════
                             float sl_level = na
                             string sl_type_used = i_sl_type == "Swing Stop" ? "swing" : "fvg_boundary"
@@ -1471,18 +1527,18 @@ check_inversions() =>
                             if ifvg_is_bullish
                                 // Bullish IFVG (long): SL is BELOW entry
                                 if i_sl_type == "Swing Stop"
-                                    sl_level := find_previous_swing_low(fvg.start_bar)
+                                    sl_level := find_previous_itl(bar_index, fvg.bottom)
                                     if na(sl_level)
-                                        sl_level := fvg.bottom  // Fallback to FVG boundary
+                                        sl_level := fvg.bottom
                                         sl_type_used := "fvg_boundary"
                                 else
                                     sl_level := fvg.bottom
                             else
                                 // Bearish IFVG (short): SL is ABOVE entry
                                 if i_sl_type == "Swing Stop"
-                                    sl_level := find_previous_swing_high(fvg.start_bar)
+                                    sl_level := find_previous_ith(bar_index, fvg.top)
                                     if na(sl_level)
-                                        sl_level := fvg.top  // Fallback to FVG boundary
+                                        sl_level := fvg.top
                                         sl_type_used := "fvg_boundary"
                                 else
                                     sl_level := fvg.top
@@ -2058,6 +2114,16 @@ render_liquidity_lines() =>
                             label.delete(liq.label_id)
                             liq.label_id := na
                         continue
+                // Skip mitigated ITH/ITL (swept OR broken through) if user doesn't want to see them
+                if (liq.is_swept or not liq.is_valid) and not i_show_swept_ithl
+                    if liq.liq_type == "ITH" or liq.liq_type == "ITL"
+                        if not na(liq.line_id)
+                            line.delete(liq.line_id)
+                            liq.line_id := na
+                        if not na(liq.label_id)
+                            label.delete(liq.label_id)
+                            liq.label_id := na
+                        continue
 
                 // Skip relative EQL/EQH if user only wants to see perfect ones
                 // NOTE: Data is still collected for grading algorithms, only rendering is filtered
@@ -2101,8 +2167,15 @@ render_liquidity_lines() =>
                         line_style := line.style_solid
 
                 else if liq.liq_type == "ITH" or liq.liq_type == "ITL"
-                    line_color := liq.is_swept ? color.new(i_ithl_color, 70) : i_ithl_color
-                    line_style := line.style_dashed
+                    if liq.is_swept
+                        line_color := color.new(i_ithl_color, 70)
+                        line_style := line.style_dotted
+                    else if not liq.is_valid
+                        line_color := color.new(color.gray, 70)
+                        line_style := line.style_dotted
+                    else
+                        line_color := i_ithl_color
+                        line_style := line.style_dashed
 
                 right_edge = bar_index + i_extend_bars
 
