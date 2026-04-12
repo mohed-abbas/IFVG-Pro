@@ -99,6 +99,7 @@ type IFVG
     string momentum     // "strong_no_chop", "neutral", "weak_or_choppy"
     bool has_delivery   // true if delivery from prior FVG detected (per D-01)
     string pd_zone      // "premium", "discount", "equilibrium", "neutral"
+    int singularity_score  // 0=not singular, 1=singular small, 2=singular obvious
     box box_id          // Reference to drawn box
     label label_id      // Reference to IFVG label (tiny "IFVG" text)
     line be_line_id     // Reference to BE line
@@ -728,6 +729,7 @@ check_htf_inversions(array<FVG> fvg_arr, array<IFVG> ifvg_arr, float htf_c, stri
                                 momentum = "neutral",
                                 has_delivery = false,
                                 pd_zone = "neutral",
+                                singularity_score = 0,
                                 box_id = na,
                                 label_id = na,
                                 be_line_id = na,
@@ -1650,6 +1652,7 @@ check_inversions() =>
                             // Calculate grade (checklist scoring per D-05, D-06, D-07)
                             bool fvg_singular = is_fvg_singular(fvg)
                             float fvg_size = fvg.top - fvg.bottom
+                            int singular_score = score_singularity(fvg_singular, fvg_size, atr_value)
                             string grade = calculate_grade(has_sweep, has_delivery, momentum_score, dol, fvg_singular, fvg_size, "neutral", ifvg_is_bullish)
 
                             // Create IFVG
@@ -1673,6 +1676,7 @@ check_inversions() =>
                                 momentum = momentum_str,
                                 has_delivery = has_delivery,
                                 pd_zone = "neutral",
+                                singularity_score = singular_score,
                                 box_id = na,
                                 label_id = na,
                                 be_line_id = na,
@@ -1996,18 +2000,25 @@ render_ifvg_boxes() =>
                                 width = 2
                             )
 
-                            // Build tooltip with grade breakdown
-                            sweep_check = ifvg.has_sweep ? "☑" : "☐"
-                            momentum_text = ifvg.momentum == "strong_no_chop" ? "Strong" : (ifvg.momentum == "weak_or_choppy" ? "Weak" : "Neutral")
-                            momentum_check = ifvg.momentum == "strong_no_chop" ? "☑" : "☐"
-                            dol_text = not na(ifvg.dol) ? (ifvg.dol.liq_type + " @ " + str.tostring(ifvg.dol.level, format.mintick)) : "None"
-                            dol_check = not na(ifvg.dol) ? "☑" : "☐"
+                            // Build tooltip with 5-criterion scoring breakdown
+                            int tt_sd = (ifvg.has_sweep and ifvg.has_delivery) ? 2 : ((ifvg.has_sweep or ifvg.has_delivery) ? 1 : 0)
+                            int tt_mom = ifvg.momentum == "strong_no_chop" ? 2 : (ifvg.momentum == "weak_or_choppy" ? 0 : 1)
+                            int tt_tgt = score_target_clarity(ifvg.dol)
+                            int tt_sg = ifvg.singularity_score
+                            int tt_pd = score_pd_zone(ifvg.pd_zone, ifvg.is_bullish)
+                            int tt_total = tt_sd + tt_mom + tt_tgt + tt_sg + tt_pd
+                            string sd_detail = ifvg.has_sweep and ifvg.has_delivery ? "Sweep+Delivery" : (ifvg.has_sweep ? "Sweep only" : (ifvg.has_delivery ? "Delivery only" : "Neither"))
+                            string mom_text = ifvg.momentum == "strong_no_chop" ? "Strong" : (ifvg.momentum == "weak_or_choppy" ? "Weak" : "Moderate")
+                            string dol_text = not na(ifvg.dol) ? (ifvg.dol.liq_type + " @ " + str.tostring(ifvg.dol.level, format.mintick)) : "None"
+                            string zone_text = str.upper(ifvg.pd_zone)
                             entry_status = ifvg.entry_valid ? "VALID" : "INVALID"
-                            tooltip_text = "Grade: " + ifvg.grade + "\n" +
+                            tooltip_text = "Grade: " + ifvg.grade + " (" + str.tostring(tt_total) + "/10)\n" +
                                           "─────────────\n" +
-                                          sweep_check + " Sweep\n" +
-                                          momentum_check + " Momentum: " + momentum_text + "\n" +
-                                          dol_check + " DOL: " + dol_text + "\n" +
+                                          "[" + str.tostring(tt_sd) + "] " + sd_detail + "\n" +
+                                          "[" + str.tostring(tt_mom) + "] Momentum: " + mom_text + "\n" +
+                                          "[" + str.tostring(tt_tgt) + "] Target: " + dol_text + "\n" +
+                                          "[" + str.tostring(tt_sg) + "] Singularity\n" +
+                                          "[" + str.tostring(tt_pd) + "] Zone: " + zone_text + "\n" +
                                           "─────────────\n" +
                                           "Entry: " + entry_status
                             // Entry line label: Grade + Direction
