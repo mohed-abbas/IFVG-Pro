@@ -652,7 +652,7 @@ detect_fvg() =>
 // ─────────────────────────────────────────────────────────────────────
 // Get HTF OHLC data via request.security
 // ─────────────────────────────────────────────────────────────────────
-// request.security budget: 2 calls used, 14 tuple elements / 127 max
+// request.security budget: 3 calls used pre-Phase-2; 4 calls / 16 tuple elements after Phase 2 PD pivots (D-01)
 // HTF 1 Data - Consolidated tuple (7 elements)
 [htf_high, htf_low, htf_close, htf_high_2, htf_low_2, htf_bar_idx_raw, htf_atr] = request.security(syminfo.tickerid, i_htf_timeframe, [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period)], lookahead = barmerge.lookahead_off)
 int htf_bar_idx = int(htf_bar_idx_raw)
@@ -660,6 +660,11 @@ int htf_bar_idx = int(htf_bar_idx_raw)
 // HTF 2 Data - Consolidated tuple (7 elements)
 [htf2_high, htf2_low, htf2_close, htf2_high_2, htf2_low_2, htf2_bar_idx_raw, htf2_atr] = request.security(syminfo.tickerid, i_htf_timeframe_2, [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period)], lookahead = barmerge.lookahead_off)
 int htf2_bar_idx = int(htf2_bar_idx_raw)
+
+// ─── PD timeframe swing data (Phase 2 — PDZ-01) ─────────────
+// 1 call, 2 tuple elements. Security-call budget: 3 -> 4 of 40 after Phase 2.
+// pivothigh/pivotlow on PD TF returns the pivot PRICE when confirmed, na otherwise.
+[pd_pivot_high_raw, pd_pivot_low_raw] = request.security(syminfo.tickerid, i_pd_timeframe, [ta.pivothigh(i_pd_swing_lookback, i_pd_swing_lookback), ta.pivotlow(i_pd_swing_lookback, i_pd_swing_lookback)], lookahead = barmerge.lookahead_off)
 
 // Track HTF bar changes to detect new HTF bars
 var int prev_htf_bar = na
@@ -1214,6 +1219,81 @@ check_liquidity_sweeps() =>
                         if close < liq.level
                             liq.is_valid := false  // Broken through, no longer valid for EQL
 
+// ─────────────────────────────────────────────────────────────────────
+// Create PD Internal Highs/Lows (PD_ITH/PD_ITL) — mirror of create_internal_levels()
+// scoped to g_pd_swing_highs/lows and g_pd_liquidity_array.
+// ─────────────────────────────────────────────────────────────────────
+create_pd_internal_levels() =>
+    int pd_swing_high_size = array.size(g_pd_swing_highs)
+    if pd_swing_high_size > 0
+        recent_high = array.get(g_pd_swing_highs, pd_swing_high_size - 1)
+        bool ith_exists = false
+        int pd_liq_size_1 = array.size(g_pd_liquidity_array)
+        if pd_liq_size_1 > 0
+            for i = 0 to pd_liq_size_1 - 1
+                if i < pd_liq_size_1
+                    liq = array.get(g_pd_liquidity_array, i)
+                    if liq.liq_type == "PD_ITH" and liq.bar_idx == recent_high.bar_idx
+                        ith_exists := true
+                        break
+        if not ith_exists
+            new_ith = Liquidity.new(level = recent_high.price, original_level = recent_high.price, liq_type = "PD_ITH", quality = "na", bar_idx = recent_high.bar_idx, last_touch_bar = recent_high.bar_idx, touch_count = 1, is_swept = false, swept_bar = 0, is_valid = true, line_id = na, label_id = na)
+            array.push(g_pd_liquidity_array, new_ith)
+    int pd_swing_low_size = array.size(g_pd_swing_lows)
+    if pd_swing_low_size > 0
+        recent_low = array.get(g_pd_swing_lows, pd_swing_low_size - 1)
+        bool itl_exists = false
+        int pd_liq_size_2 = array.size(g_pd_liquidity_array)
+        if pd_liq_size_2 > 0
+            for i = 0 to pd_liq_size_2 - 1
+                if i < pd_liq_size_2
+                    liq = array.get(g_pd_liquidity_array, i)
+                    if liq.liq_type == "PD_ITL" and liq.bar_idx == recent_low.bar_idx
+                        itl_exists := true
+                        break
+        if not itl_exists
+            new_itl = Liquidity.new(level = recent_low.price, original_level = recent_low.price, liq_type = "PD_ITL", quality = "na", bar_idx = recent_low.bar_idx, last_touch_bar = recent_low.bar_idx, touch_count = 1, is_swept = false, swept_bar = 0, is_valid = true, line_id = na, label_id = na)
+            array.push(g_pd_liquidity_array, new_itl)
+    while array.size(g_pd_liquidity_array) > 50
+        array.shift(g_pd_liquidity_array)
+
+// ─────────────────────────────────────────────────────────────────────
+// Check PD liquidity sweeps — mirror of check_liquidity_sweeps() scoped
+// to g_pd_liquidity_array. Runs on chart-TF close (RESEARCH §Pattern 2).
+// ─────────────────────────────────────────────────────────────────────
+check_pd_sweeps() =>
+    int pd_liq_size = array.size(g_pd_liquidity_array)
+    if barstate.isconfirmed and pd_liq_size > 0
+        for i = 0 to pd_liq_size - 1
+            if i < pd_liq_size
+                liq = array.get(g_pd_liquidity_array, i)
+                if not liq.is_swept and liq.is_valid
+                    if liq.liq_type == "PD_ITH"
+                        if high > liq.level and close < liq.level
+                            liq.is_swept := true
+                            liq.swept_bar := bar_index
+                            liq.is_valid := false
+                    if liq.liq_type == "PD_ITL"
+                        if low < liq.level and close > liq.level
+                            liq.is_swept := true
+                            liq.swept_bar := bar_index
+                            liq.is_valid := false
+                if liq.is_valid and not liq.is_swept
+                    if liq.liq_type == "PD_ITH"
+                        if close > liq.level
+                            liq.is_valid := false
+                    if liq.liq_type == "PD_ITL"
+                        if close < liq.level
+                            liq.is_valid := false
+
+// ─────────────────────────────────────────────────────────────────────
+// Select dealing-range source array: PD array when chart TF < PD TF,
+// otherwise chart-TF g_liquidity_array fallback (D-05).
+// ─────────────────────────────────────────────────────────────────────
+select_dealing_range_source() =>
+    array<Liquidity> result = is_pd_tf_higher() ? g_pd_liquidity_array : g_liquidity_array
+    result
+
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 7: BE POINT & GRADING FUNCTIONS (Phase 2)
 // ══════════════════════════════════════════════════════════════════════
@@ -1737,7 +1817,8 @@ check_inversions() =>
                             bool fvg_singular = is_fvg_singular(fvg)
                             float gap_size = fvg.top - fvg.bottom
                             int singular_score = score_singularity(fvg_singular, gap_size, atr_value)
-                            string grade = calculate_grade(has_sweep, has_delivery, momentum_score, dol, singular_score, "neutral", ifvg_is_bullish)
+                            string ifvg_pd_zone = compute_pd_zone(fvg.mid)
+                            string grade = calculate_grade(has_sweep, has_delivery, momentum_score, dol, singular_score, ifvg_pd_zone, ifvg_is_bullish)
 
                             // Create IFVG
                             new_ifvg = IFVG.new(
@@ -1759,7 +1840,7 @@ check_inversions() =>
                                 has_sweep = has_sweep,
                                 momentum = momentum_str,
                                 has_delivery = has_delivery,
-                                pd_zone = "neutral",
+                                pd_zone = ifvg_pd_zone,
                                 momentum_score = momentum_score,
                                 singularity_score = singular_score,
                                 box_id = na,
@@ -2525,6 +2606,45 @@ if i_show_indicator
             if not na(htf2_fvg) and not htf_fvg_exists(g_htf2_fvg_array, htf2_fvg.top, htf2_fvg.bottom, htf2_fvg.is_bullish)
                 array.push(g_htf2_fvg_array, htf2_fvg)
                 cleanup_htf_fvg_array(g_htf2_fvg_array, i_max_fvgs)
+
+    // ─────────────────────────────────────────────────────────────────
+    // Step 4C: PD zone pipeline (Phase 2 — runs before check_inversions)
+    // ─────────────────────────────────────────────────────────────────
+    if barstate.isconfirmed
+        bool pd_bar_changed = na(g_prev_pd_bar) or time("", i_pd_timeframe) != g_prev_pd_bar
+        if pd_bar_changed
+            g_prev_pd_bar := time("", i_pd_timeframe)
+        if not na(pd_pivot_high_raw) and pd_bar_changed
+            array.push(g_pd_swing_highs, SwingPoint.new(price=pd_pivot_high_raw, bar_idx=bar_index, is_high=true, is_internal=false, is_valid=true))
+            if array.size(g_pd_swing_highs) > 50
+                array.shift(g_pd_swing_highs)
+        if not na(pd_pivot_low_raw) and pd_bar_changed
+            array.push(g_pd_swing_lows, SwingPoint.new(price=pd_pivot_low_raw, bar_idx=bar_index, is_high=false, is_internal=false, is_valid=true))
+            if array.size(g_pd_swing_lows) > 50
+                array.shift(g_pd_swing_lows)
+    create_pd_internal_levels()
+    check_pd_sweeps()
+    // Select newest unswept PD ITH and PD ITL (D-02).
+    array<Liquidity> src = select_dealing_range_source()
+    Liquidity sel_ith = na
+    Liquidity sel_itl = na
+    if array.size(src) > 0
+        for i = array.size(src) - 1 to 0
+            Liquidity liq = array.get(src, i)
+            if liq.is_valid and not liq.is_swept
+                if (liq.liq_type == "PD_ITH" or liq.liq_type == "ITH") and na(sel_ith)
+                    sel_ith := liq
+                if (liq.liq_type == "PD_ITL" or liq.liq_type == "ITL") and na(sel_itl)
+                    sel_itl := liq
+                if not na(sel_ith) and not na(sel_itl)
+                    break
+    if not na(sel_ith) and not na(sel_itl) and sel_ith.level > sel_itl.level
+        bool rotated = na(g_current_range) or not g_current_range.is_valid or g_current_range.high_bar_idx != sel_ith.bar_idx or g_current_range.low_bar_idx != sel_itl.bar_idx
+        if rotated
+            g_current_range := DealingRange.new(high_price=sel_ith.level, low_price=sel_itl.level, high_bar_idx=sel_ith.bar_idx, low_bar_idx=sel_itl.bar_idx, is_valid=true, line_high=na, line_eq=na, line_low=na, label_high=na, label_eq=na, label_low=na, fill_premium=na, fill_discount=na, ote_line_top=na, ote_line_bot=na, ote_fill=na)
+    else
+        if not na(g_current_range)
+            g_current_range.is_valid := false
 
     // ─────────────────────────────────────────────────────────────────
     // Step 5: Check for LTF inversions (FVG → IFVG)
