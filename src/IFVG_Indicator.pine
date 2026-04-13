@@ -108,6 +108,28 @@ type IFVG
     line entry_line_id  // Reference to entry line (at inversion close)
     label entry_label_id // Reference to entry line label (grade + direction)
 
+// ─────────────────────────────────────────────────────────────
+// DealingRange — snapshot of the current HTF dealing range (PDZ-01..PDZ-08)
+// Held in var g_current_range; rotated delete+recreate on new range selection.
+// ─────────────────────────────────────────────────────────────
+type DealingRange
+    float  high_price      // selected ITH level
+    float  low_price       // selected ITL level
+    int    high_bar_idx    // chart bar_index where ITH was created
+    int    low_bar_idx     // chart bar_index where ITL was created
+    bool   is_valid        // true when both ITH and ITL currently selected
+    line   line_high       // swing-H dashed line
+    line   line_eq         // EQ dashed line
+    line   line_low        // swing-L dashed line
+    label  label_high      // "1 (price)" label
+    label  label_eq        // "0.5 (price)" label
+    label  label_low       // "0 (price)" label
+    linefill fill_premium  // optional zone fill above EQ
+    linefill fill_discount // optional zone fill below EQ
+    line   ote_line_top    // optional OTE upper line
+    line   ote_line_bot    // optional OTE lower line
+    linefill ote_fill      // optional OTE fill
+
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 2: INPUT CONFIGURATION
 // ══════════════════════════════════════════════════════════════════════
@@ -160,6 +182,19 @@ i_htf_box_opacity   = input.int(75, "HTF Box Opacity (%)", minval=50, maxval=95,
                       tooltip="Transparency for HTF boxes. Higher = more transparent")
 i_htf_border_width  = input.int(3, "HTF Border Width", minval=1, maxval=5, group=GROUP_HTF,
                       tooltip="Thicker borders to distinguish HTF from LTF")
+
+// ─────────────────────────────────────────────────────────────────────
+// PD Zones (premium/discount) — Phase 2
+// ─────────────────────────────────────────────────────────────────────
+string GROUP_PD_ZONES = "═══ PD Zones ═══"
+i_pd_timeframe                = input.timeframe("D",       "PD Timeframe",                  group=GROUP_PD_ZONES, tooltip="Higher timeframe used to derive the dealing range (default Daily).")
+i_pd_swing_lookback           = input.int(5, "PD Swing Lookback (left/right bars)", minval=2, maxval=20, group=GROUP_PD_ZONES, tooltip="leftbars and rightbars for ta.pivothigh/pivotlow on the PD timeframe.")
+i_show_pd_lines               = input.bool(true, "Show PD Zone Lines",              group=GROUP_PD_ZONES)
+i_show_pd_fills               = input.bool(false, "Show Zone Fills",                group=GROUP_PD_ZONES, tooltip="Linefill shading for premium (above EQ) and discount (below EQ).")
+i_show_ote                    = input.bool(false, "Show OTE Band (62%-79%)",        group=GROUP_PD_ZONES, tooltip="Visual only — does not affect grading.")
+i_pd_line_color               = input.color(color.white, "PD Line Color",           group=GROUP_PD_ZONES)
+i_pd_eq_color                 = input.color(color.yellow, "EQ Line Color",          group=GROUP_PD_ZONES)
+i_pd_line_width               = input.int(1, "PD Line Width", minval=1, maxval=4,   group=GROUP_PD_ZONES)
 
 // ─────────────────────────────────────────────────────────────────────
 // Liquidity Detection Settings (Phase 2)
@@ -269,6 +304,13 @@ var array<IFVG> g_htf2_ifvg_array = array.new<IFVG>()
 var array<SwingPoint> g_swing_highs = array.new<SwingPoint>()
 var array<SwingPoint> g_swing_lows = array.new<SwingPoint>()
 var array<Liquidity> g_liquidity_array = array.new<Liquidity>()
+
+// PD zone state (Phase 2)
+var array<SwingPoint> g_pd_swing_highs = array.new<SwingPoint>()
+var array<SwingPoint> g_pd_swing_lows  = array.new<SwingPoint>()
+var array<Liquidity>  g_pd_liquidity_array = array.new<Liquidity>()
+var DealingRange      g_current_range = na
+var int               g_prev_pd_bar   = na
 
 // ATR for sizing
 atr_value = ta.atr(i_fvg_atr_period)
@@ -519,6 +561,42 @@ merge_with_existing_fvg(FVG new_fvg) =>
                     merged := true
                     break
     merged
+
+// ─────────────────────────────────────────────────────────────────────
+// PD Zone helpers (Phase 2)
+// ─────────────────────────────────────────────────────────────────────
+// Returns true when chart TF < PD TF (i.e., PD fetch via request.security is meaningful).
+// When false, fall back to chart-TF g_liquidity_array. (D-05)
+is_pd_tf_higher() =>
+    timeframe.in_seconds(i_pd_timeframe) > timeframe.in_seconds(timeframe.period)
+
+// Computes pd_zone for an IFVG midpoint against the current range.
+// Strict 50% equilibrium (D-13). Returns "neutral" when no valid range (D-06).
+compute_pd_zone(float price_mid) =>
+    string result = "neutral"
+    if not na(g_current_range) and g_current_range.is_valid
+        float hi = g_current_range.high_price
+        float lo = g_current_range.low_price
+        if hi > lo
+            float eq = (hi + lo) / 2.0
+            if price_mid > eq
+                result := "premium"
+            else if price_mid < eq
+                result := "discount"
+            else
+                result := "equilibrium"
+    result
+
+// Integer 0-100 or na when no valid range (DSH-02).
+compute_range_percent(float price_mid) =>
+    int result = na
+    if not na(g_current_range) and g_current_range.is_valid
+        float hi = g_current_range.high_price
+        float lo = g_current_range.low_price
+        float span = hi - lo
+        if span > 0
+            result := int(math.round((price_mid - lo) / span * 100))
+    result
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 5: FVG DETECTION
