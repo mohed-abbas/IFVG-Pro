@@ -44,11 +44,13 @@ Plans:
   3. Setups in the optimal zone (longs in discount, shorts in premium) receive a +1 quality boost; wrong-zone setups receive -1 -- observable as grade differences between same-quality setups in different zones
   4. The dashboard shows the current PD zone name (PREMIUM/DISCOUNT) with color coding and the current range percentage (0-100%)
   5. Grade distribution remains balanced after adding the PD modifier -- no single grade exceeds 40% of setups after threshold recalibration
-**Plans**: TBD (previous plans reverted — restarting from scratch)
+**Plans**: 3 plans
 **UI hint**: yes
 
 Plans:
-- [ ] TBD
+- [ ] 02-01-PLAN.md — PD swing detection pipeline (DealingRange type, HTF pivot request.security, mirrored ITH/ITL, main-loop integration, pd_zone injection at IFVG creation)
+- [ ] 02-02-PLAN.md — PD zone rendering (3 dashed lines, percentage(price) labels, optional fills, optional OTE band)
+- [ ] 02-03-PLAN.md — Dashboard rows (PD Zone + Range %)
 
 ### Phase 3: Session Tracking & Visualization
 **Goal**: Traders can see Asian, London, and NY session boundaries with tracked highs/lows as liquidity reference levels
