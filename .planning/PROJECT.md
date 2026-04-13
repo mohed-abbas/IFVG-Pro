@@ -24,11 +24,13 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 - ✓ HTF overlay projection on LTF chart — Phase 3
 - ✓ HTF bias determination — Phase 3
 - ✓ PDA delivery detection for grading — Phase 3
+- ✓ 5-criterion checklist grading (sweep, momentum, delivery, target clarity, singularity) — Phase 5
+- ✓ Delivery-from-FVG detection with HTF priority cascade — Phase 5
+- ✓ Numeric momentum scoring (0-2) replacing string categories — Phase 5
+- ✓ Tooltip with full grading breakdown per criterion — Phase 5
 
 ### Active
 
-- [ ] Fix hardcoded fvg_singular = true inflating all grades
-- [ ] Review and fix duplicated HTF bias calculation logic
 - [ ] Premium/Discount zone calculation using HTF swing detection
 - [ ] PD zone grading integration (+1/-1 quality modifier)
 - [ ] PD zone visualization (lines, fills, labels)
@@ -53,8 +55,8 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 - **Platform**: TradingView Pine Script v6, overlay indicator
 - **Markets**: Market-agnostic (indices, forex, crypto, commodities) via ATR-based sizing
 - **Methodology**: Based on DodgysDD / ICT Smart Money Concepts
-- **Current state**: 2,511 lines in single file (src/IFVG_Indicator.pine), Phases 1-3 complete
-- **Known issues**: Hardcoded `fvg_singular = true` at line ~1595 inflates grades; duplicated HTF bias calc in two render functions; 16 of 40 request.security() calls consumed
+- **Current state**: ~2,500 lines in single file (src/IFVG_Indicator.pine), Phases 1-5 complete
+- **Known issues**: PD zone hardcoded to "neutral" (A+ unreachable until PD zone phase); 16 of 40 request.security() calls consumed
 - **Resource constraints**: TradingView limits — 500 drawing objects each (boxes/lines/labels), 40 request.security() calls, single-file architecture
 - **Reference materials**: PRD.md, ARCHITECTURE.md, strategy.md, briefing/IFVG_Rating_System.pdf, PHASE4_PD_ZONES_PLAN.md
 
@@ -77,6 +79,7 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 | barstate.isconfirmed only | Prevents repainting — critical for trading decisions | ✓ Good |
 | HTF swing-based PD zones over daily range | More accurate ICT dealing range concept | — Pending |
 | Hybrid grading (tier + quality score) | Separates mandatory criteria from quality modifiers | ✓ Good |
+| 5-criterion checklist grading (Phase 5) | Transparent numeric scoring replaces opaque tier logic | ✓ Good |
 
 ## Evolution
 
