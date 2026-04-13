@@ -2018,7 +2018,7 @@ render_ifvg_boxes() =>
                             string dol_text = not na(ifvg.dol) ? (ifvg.dol.liq_type + " @ " + str.tostring(ifvg.dol.level, format.mintick)) : "None"
                             string zone_text = str.upper(ifvg.pd_zone)
                             entry_status = ifvg.entry_valid ? "VALID" : "INVALID"
-                            tooltip_text = "Grade: " + ifvg.grade + " (" + str.tostring(tt_total) + "/10)\n" +
+                            tooltip_text = "Grade: " + ifvg.grade + " (at inversion) | Now: " + str.tostring(tt_total) + "/10\n" +
                                           "─────────────\n" +
                                           "[" + str.tostring(tt_sd) + "] " + sd_detail + "\n" +
                                           "[" + str.tostring(tt_mom) + "] Momentum: " + mom_text + "\n" +
