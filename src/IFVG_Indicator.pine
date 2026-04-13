@@ -1275,6 +1275,10 @@ check_recent_sweep(bool looking_for_bsl, int lookback_bars) =>
 // Returns int: 0 = weak/choppy, 1 = moderate, 2 = strong displacement
 // Score 2 requires BOTH strong inversion AND strong displacement
 // Score 1 requires EITHER strong signal OR moderate candle metrics
+// NOTE: Parameters must be current-bar open/high/low/close only.
+// The function uses series offsets close[k], open[k], high[k], low[k]
+// relative to the current bar for displacement analysis. Passing saved
+// OHLC values from a different bar will NOT change the series lookback.
 // ─────────────────────────────────────────────────────────────────────
 assess_momentum(float inv_open, float inv_high, float inv_low, float inv_close) =>
     int result = 0
