@@ -1906,8 +1906,9 @@ render_ifvg_boxes() =>
                     right_edge = bar_index + i_extend_bars
 
                     // Draw IFVG box (gray, no borders)
+                    int ifvg_left_edge = math.max(ifvg.start_bar, bar_index - 400)
                     ifvg.box_id := box.new(
-                        left = ifvg.start_bar,
+                        left = ifvg_left_edge,
                         top = ifvg.top,
                         right = right_edge,
                         bottom = ifvg.bottom,
@@ -1946,7 +1947,7 @@ render_ifvg_boxes() =>
                             sl_line_style = line.style_solid
 
                             ifvg.sl_line_id := line.new(
-                                x1 = ifvg.start_bar,
+                                x1 = ifvg_left_edge,
                                 y1 = sl_draw_level,
                                 x2 = right_edge,
                                 y2 = sl_draw_level,
@@ -1970,7 +1971,7 @@ render_ifvg_boxes() =>
                             be_line_style = ifvg.be_status == "intact" ? line.style_dashed : line.style_dotted
 
                             ifvg.be_line_id := line.new(
-                                x1 = ifvg.start_bar,
+                                x1 = ifvg_left_edge,
                                 y1 = be_draw_level,
                                 x2 = right_edge,
                                 y2 = be_draw_level,
@@ -1990,8 +1991,9 @@ render_ifvg_boxes() =>
                             entry_line_color = ifvg.is_bullish ? i_entry_color_bull : i_entry_color_bear
 
                             // Draw entry line
+                            int entry_left_edge = math.max(ifvg.inversion_bar, bar_index - 400)
                             ifvg.entry_line_id := line.new(
-                                x1 = ifvg.inversion_bar,
+                                x1 = entry_left_edge,
                                 y1 = entry_level,
                                 x2 = right_edge,
                                 y2 = entry_level,
