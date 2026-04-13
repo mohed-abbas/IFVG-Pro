@@ -1386,7 +1386,7 @@ check_delivery_from_fvg(bool ifvg_is_bullish, int lookback) =>
                     if bar_dist > 0 and bar_dist <= lookback
                         // Body respect check (per D-04): no body close through zone
                         bool bodies_respected = true
-                        int check_bars = math.min(bar_dist, 50)
+                        int check_bars = math.min(bar_dist - 1, 50)
                         for k = 1 to check_bars
                             if bodies_respected
                                 if look_for_bullish
@@ -1408,7 +1408,7 @@ check_delivery_from_fvg(bool ifvg_is_bullish, int lookback) =>
                     int bar_dist = bar_index - candidate.end_bar
                     if bar_dist > 0 and bar_dist <= lookback
                         bool bodies_respected = true
-                        int check_bars = math.min(bar_dist, 50)
+                        int check_bars = math.min(bar_dist - 1, 50)
                         for k = 1 to check_bars
                             if bodies_respected
                                 if look_for_bullish
@@ -1428,7 +1428,7 @@ check_delivery_from_fvg(bool ifvg_is_bullish, int lookback) =>
                     int bar_dist = bar_index - candidate.end_bar
                     if bar_dist > 0 and bar_dist <= lookback
                         bool bodies_respected = true
-                        int check_bars = math.min(bar_dist, 50)
+                        int check_bars = math.min(bar_dist - 1, 50)
                         for k = 1 to check_bars
                             if bodies_respected
                                 if look_for_bullish
