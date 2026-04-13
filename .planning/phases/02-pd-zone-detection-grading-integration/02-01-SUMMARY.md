@@ -1,118 +1,136 @@
 ---
 phase: 02-pd-zone-detection-grading-integration
 plan: 01
-subsystem: engine
-tags: [pine-script, grading, htf, request-security, pd-zones, ict]
-
-# Dependency graph
+subsystem: pd-zone-engine
+tags: [pd-zone, dealing-range, htf-swing, grading]
 requires:
-  - phase: 01-bug-fixes-security-consolidation
-    provides: "Consolidated request.security() tuple pattern (2 calls), fixed singularity grading"
+  - Existing Liquidity type + ITH/ITL pipeline (Phase 2 Section 6)
+  - Existing calculate_grade / score_pd_zone wiring (Phase 5)
+  - IFVG.pd_zone field already declared (line 101)
 provides:
-  - "PD zone engine: HTF swing detection, zone classification, grading modifier"
-  - "IFVG type pd_zone field frozen at inversion time"
-  - "11 PD zone inputs with independent visual/grading toggles"
-  - "PD zone global variables and visual element references for Plan 02"
-affects: [02-02-PLAN, 02-03-PLAN, dashboard, rendering]
-
-# Tech tracking
+  - DealingRange custom type
+  - g_pd_swing_highs / g_pd_swing_lows / g_pd_liquidity_array / g_current_range globals
+  - PD pivot retrieval via request.security (4th security call)
+  - create_pd_internal_levels / check_pd_sweeps / select_dealing_range_source
+  - compute_pd_zone / compute_range_percent / is_pd_tf_higher helpers
+  - Main-loop PD pipeline ordered before check_inversions()
+affects:
+  - LTF IFVG creation site (line 1684 region) now stores real pd_zone
+  - calculate_grade() call site now receives a real zone (unlocks A+)
 tech-stack:
-  added: [ta.pivothigh, ta.pivotlow, ta.valuewhen, linefill]
-  patterns: [consolidated-request-security-tuple, frozen-state-at-inversion, independent-toggle-architecture]
-
+  added:
+    - ta.pivothigh / ta.pivotlow inside request.security tuple on PD TF
+  patterns:
+    - Mirrored ITH/ITL machinery scoped to PD arrays
+    - `var` scalar mutation kept in main-loop scope (never inside `=>` fns)
 key-files:
   created: []
-  modified: [src/IFVG_Indicator.pine]
-
-key-decisions:
-  - "Consolidated PD swing data into single request.security() tuple (1 call, 2 elements) matching Phase 1 pattern"
-  - "Grade thresholds unchanged per D-06; quality_score range expanded from [-2,+3] to [-3,+4]"
-  - "HTF IFVGs get pd_zone='neutral' since they do not participate in PD zone grading"
-  - "Added missing delivery fields to HTF IFVG.new() to match IFVG type definition"
-
-patterns-established:
-  - "PD zone independent toggles: visual display toggles and grading modifier toggle are fully independent (D-05, D-07)"
-  - "pd_zone frozen at inversion time, never recalculated for existing IFVGs (D-09)"
-
-requirements-completed: [PDZ-01, PDZ-02, PDZ-03, PDZ-07, PDZ-08]
-
-# Metrics
-duration: 3min
-completed: 2026-03-26
+  modified:
+    - src/IFVG_Indicator.pine
+decisions:
+  - PD pipeline runs BEFORE check_inversions() so pd_zone is freshly computed at inversion
+  - HTF IFVG site keeps pd_zone='neutral' per STATE.md (bias-only)
+  - Chart-TF fallback via is_pd_tf_higher()/select_dealing_range_source() keeps feature active when chart TF >= PD TF
+  - Range rotation keyed off selected ITH/ITL bar_idx mismatch (delete+recreate snapshot)
+metrics:
+  duration: "execution"
+  completed: "2026-04-14"
 ---
 
-# Phase 02 Plan 01: PD Zone Engine Summary
+# Phase 2 Plan 01: PD Zone Detection & Grading Integration — Summary
 
-**HTF swing-based PD zone engine with ta.pivothigh/ta.pivotlow via consolidated request.security() tuple, zone classification (premium/discount/equilibrium/neutral), and +1/-1 grading modifier integrated into calculate_grade()**
+One-liner: HTF swing-based dealing range pipeline feeding computed pd_zone into LTF IFVG creation, unlocking A+ grades without any grading code changes.
 
-## Performance
+## What Changed
 
-- **Duration:** 3 min
-- **Started:** 2026-03-26T07:22:51Z
-- **Completed:** 2026-03-26T07:26:40Z
-- **Tasks:** 2
-- **Files modified:** 1
+### Section 1 — Type additions
+Added `type DealingRange` with 16 fields: `high_price`, `low_price`, `high_bar_idx`, `low_bar_idx`, `is_valid`, three lines (`line_high`, `line_eq`, `line_low`), three labels, two zone linefills (`fill_premium`, `fill_discount`), two OTE lines, and OTE linefill. Rendering handles remain `na` until Plan 02 populates them.
 
-## Accomplishments
-- Added pd_zone field to IFVG type and 11 configurable PD zone inputs with correct defaults per decisions D-01 through D-12
-- Implemented HTF swing detection using consolidated request.security() tuple call (total 3 calls, 16 elements of 127 max)
-- Created update_pd_zones() for zone calculation (EQ at 50%, OTE at 62%/79%) and get_pd_zone_modifier() for direction-aware grading
-- Integrated pd_zone_modifier into calculate_grade() quality_score with thresholds unchanged
-- Wired pd_zone to both IFVG.new() call sites (LTF with g_pd_current_zone, HTF with "neutral")
-- Added update_pd_zones() call to main execution loop after swing detection
+### Section 2 — Inputs
+Added `GROUP_PD_ZONES` input group between HTF and Liquidity groups with 8 inputs:
+- `i_pd_timeframe` (default "D")
+- `i_pd_swing_lookback` (default 5, range 2-20)
+- `i_show_pd_lines` (true), `i_show_pd_fills` (false), `i_show_ote` (false)
+- `i_pd_line_color` (white), `i_pd_eq_color` (yellow), `i_pd_line_width` (1)
 
-## Task Commits
+### Section 3 — Globals
+Added 5 PD globals: `g_pd_swing_highs`, `g_pd_swing_lows`, `g_pd_liquidity_array`, `g_current_range` (DealingRange snapshot), and `g_prev_pd_bar` (HTF-bar-change tracker).
 
-Each task was committed atomically:
+### Section 4 — Utilities (end of Section 4)
+Three helpers:
+- `is_pd_tf_higher()` — TF comparison via `timeframe.in_seconds`.
+- `compute_pd_zone(float price_mid)` — returns `premium`/`discount`/`equilibrium`/`neutral` against the current range (strict 50% EQ).
+- `compute_range_percent(float price_mid)` — integer 0-100 or `na` when no valid range.
 
-1. **Task 1: Add IFVG type field, inputs, globals, and HTF swing detection** - `9ea06d4` (feat)
-2. **Task 2: Integrate PD zone modifier into grading and wire IFVG creation + main loop** - `e226a86` (feat)
+### Section 5B — HTF data retrieval
+Added one new `request.security` tuple call on `i_pd_timeframe` pulling `ta.pivothigh` and `ta.pivotlow`. Security-call budget moved from 3/40 to 4/40. Budget comment updated accordingly.
 
-## Files Created/Modified
-- `src/IFVG_Indicator.pine` - Added pd_zone field to IFVG type, 11 PD zone inputs, PD zone globals and visual element references, HTF swing detection via request.security(), update_pd_zones() and get_pd_zone_modifier() functions, grading integration, IFVG creation wiring, main loop call
+### Section 6 — Liquidity
+Added three functions AFTER `check_liquidity_sweeps()`:
+- `create_pd_internal_levels()` — mirror of `create_internal_levels()` producing `PD_ITH`/`PD_ITL` into `g_pd_liquidity_array` (capped at 50, FIFO).
+- `check_pd_sweeps()` — mirror of `check_liquidity_sweeps()` scoped to PD array; sweep detection on chart-TF close.
+- `select_dealing_range_source()` — returns PD array when chart TF < PD TF, otherwise `g_liquidity_array` (D-05 fallback).
 
-## Decisions Made
-- Consolidated PD swing data into single request.security() tuple call (1 new call with 2 elements) matching the existing consolidation pattern from Phase 1, keeping total at 3 calls
-- Grade thresholds left unchanged per D-06; quality_score range naturally expands from [-2,+3] to [-3,+4] with the new PD modifier
-- HTF IFVGs receive pd_zone = "neutral" since HTF IFVGs are used for bias determination only and do not participate in PD zone grading
-- Added missing delivery_tf, delivery_top, delivery_bottom, delivery_start_bar, delivery_end_bar, delivery_box_id fields to HTF IFVG.new() to match the complete IFVG type definition (auto-fix, see below)
+### Section 12 — Main loop
+Inserted PD pipeline between `check_liquidity_sweeps()` and `check_inversions()` (the plan-required order). Steps:
+1. On `barstate.isconfirmed` + PD bar change: push pivot high/low into `g_pd_swing_highs/lows`.
+2. `create_pd_internal_levels()` — mirror ITH/ITL.
+3. `check_pd_sweeps()` — invalidate or mark swept.
+4. Inline range-selection: iterate source array newest-first, pick newest unswept ITH and ITL, rotate `g_current_range` when `bar_idx` mismatch, else mark existing snapshot `is_valid := false`. Scalar `var` mutation stays in main-loop scope per CLAUDE.md rule.
+
+### LTF IFVG creation site
+- Line 1820 (new): computes `ifvg_pd_zone = compute_pd_zone(fvg.mid)` before calling `calculate_grade`.
+- Line 1821: `calculate_grade(...)` now receives `ifvg_pd_zone` instead of hardcoded `"neutral"`, so `score_pd_zone` criterion finally contributes a non-constant value.
+- Line 1843: `pd_zone = ifvg_pd_zone` stored on the IFVG object, frozen at inversion time (D-09 semantics upheld).
+
+### HTF IFVG creation site (line 732)
+Intentionally unchanged — `pd_zone = "neutral"` remains per STATE.md convention ("HTF IFVGs get pd_zone='neutral' (bias-only, no PD grading)").
+
+## Commits
+
+- `3d8d594` — Phase 2: add DealingRange type, PD inputs, globals, and PD zone helpers
+- `ba8f811` — Phase 2: wire PD HTF swing pipeline and inject computed pd_zone into IFVG creation
 
 ## Deviations from Plan
 
-### Auto-fixed Issues
+**[Rule 2 — Correctness] Updated calculate_grade call site to pass the computed pd_zone.**
+- Found during: Task 2 implementation review of must_haves.truths ("Unlock A+ grades by feeding real pd_zone into score_pd_zone()").
+- Issue: The plan's action section §4 only rewrites the IFVG.new() `pd_zone` field on line 1684, but the call to `calculate_grade(...)` one line above (1662) was still passing the string literal `"neutral"`. Without updating it, storing the correct zone on the IFVG would not affect grading — the must_have truth would fail.
+- Fix: Extracted `string ifvg_pd_zone = compute_pd_zone(fvg.mid)` once, passed it both to `calculate_grade` and into `IFVG.new()`.
+- Files modified: src/IFVG_Indicator.pine (one additional line change at the grade call site).
+- Commit: ba8f811
 
-**1. [Rule 1 - Bug] Added missing delivery fields to HTF IFVG.new()**
-- **Found during:** Task 2 (HTF IFVG.new() update)
-- **Issue:** HTF IFVG.new() call was missing 6 delivery-related fields (delivery_tf, delivery_top, delivery_bottom, delivery_start_bar, delivery_end_bar, delivery_box_id) that exist on the IFVG type. Adding pd_zone without these would cause a compile error due to field count mismatch.
-- **Fix:** Added all 6 missing delivery fields with appropriate defaults (empty string, na, na, na, na, na) before the new pd_zone field
-- **Files modified:** src/IFVG_Indicator.pine
-- **Verification:** Both IFVG.new() call sites now have all fields matching the IFVG type definition
-- **Committed in:** e226a86 (Task 2 commit)
+No other deviations.
 
----
+## Auth Gates
 
-**Total deviations:** 1 auto-fixed (1 bug fix)
-**Impact on plan:** Auto-fix was anticipated by the plan (explicitly documented in Task 2 action item 5). No scope creep.
+None.
 
-## Issues Encountered
-None
+## Known Stubs
 
-## User Setup Required
-None - no external service configuration required.
-
-## Next Phase Readiness
-- PD zone engine is complete with all data flowing correctly
-- Visual element global references are declared and ready for Plan 02 (render_pd_zones)
-- Dashboard expansion (table rows, PD zone/range% rows) deferred to Plan 03
-- Indicator should compile in TradingView (unused visual vars will generate warnings, acceptable)
+- DealingRange rendering handles (`line_high`, `line_eq`, `line_low`, labels, linefills, OTE refs) remain `na`. Intentional — Plan 02 owns rendering. The `rotated` branch creates a fresh DealingRange with `na` handles; when Plan 02 adds `clear_range_drawings`, it will be called here before rotation.
+- No dashboard rows yet (Plan 03).
 
 ## Self-Check: PASSED
 
-- FOUND: src/IFVG_Indicator.pine
-- FOUND: .planning/phases/02-pd-zone-detection-grading-integration/02-01-SUMMARY.md
-- FOUND: 9ea06d4 (Task 1 commit)
-- FOUND: e226a86 (Task 2 commit)
+Task 1 acceptance:
+- `type DealingRange` present (1 occurrence).
+- `GROUP_PD_ZONES` + 8 PD inputs present.
+- `var DealingRange      g_current_range = na` present; PD arrays declared.
+- `is_pd_tf_higher`, `compute_pd_zone`, `compute_range_percent` present.
 
----
-*Phase: 02-pd-zone-detection-grading-integration*
-*Completed: 2026-03-26*
+Task 2 acceptance:
+- New `request.security(syminfo.tickerid, i_pd_timeframe, ...)` present (1 occurrence, tuple of 2 elements).
+- `create_pd_internal_levels`, `check_pd_sweeps`, `select_dealing_range_source` present.
+- `pd_zone = compute_pd_zone` matches (via `string ifvg_pd_zone = compute_pd_zone(fvg.mid)` on line 1820 — regex matches).
+- Grep count `pd_zone = "neutral"` equals 1 (only HTF site at line 732 remains).
+- Main-loop order: liquidity sweeps → PD pivot push → create_pd_internal_levels → check_pd_sweeps → range-selection → check_inversions.
+- Security-call budget comment updated to "4 calls / 16 tuple elements after Phase 2 PD pivots".
+
+Commits verified in `git log --oneline`:
+- 3d8d594 FOUND
+- ba8f811 FOUND
+
+Files verified:
+- src/IFVG_Indicator.pine FOUND
+- .planning/phases/02-pd-zone-detection-grading-integration/02-01-SUMMARY.md FOUND (this file)
