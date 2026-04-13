@@ -3,155 +3,185 @@
 > **Audit trail only.** Do not use as input to planning, research, or execution agents.
 > Decisions are captured in CONTEXT.md — this log preserves the alternatives considered.
 
-**Date:** 2026-03-25
+**Date:** 2026-04-14
 **Phase:** 02-pd-zone-detection-grading-integration
-**Areas discussed:** HTF Swing Source, OTE Zone (62-79%), Grade Recalibration, Visual Density
+**Areas discussed:** Detection approach, Range update + timeframe, Visualization, Dashboard + grading calibration
 
 ---
 
-## HTF Swing Source
+## Area Selection
 
 | Option | Description | Selected |
 |--------|-------------|----------|
-| Dedicated PD timeframe | Separate input (i_pd_timeframe, default Daily). Costs 2 extra request.security() calls (4 of 40 total). Independent control. | ✓ |
-| Reuse HTF1 timeframe | PD zones always use HTF1. Saves 2 calls but couples TFs. | |
-| Hybrid: default to HTF1 with override | Defaults to HTF1 but adds optional override input. | |
+| Detection approach | HOW to identify the dealing range H/L | ✓ |
+| Range update + timeframe | WHEN range refreshes, default HTF, young-chart handling | ✓ |
+| Visualization — lines/labels/OTE | Line style, label format, extension, OTE default | ✓ |
+| Dashboard + grading calibration | DSH-01/02 display, PDZ-07 threshold action | ✓ |
 
-**User's choice:** Dedicated PD timeframe
-**Notes:** None
+**User's choice:** all four areas selected.
 
 ---
 
+## Detection Approach
+
+### Initial question — how to identify the dealing range
+
 | Option | Description | Selected |
 |--------|-------------|----------|
-| Daily | Standard ICT dealing range. Works across all chart timeframes. | ✓ |
-| 4H | Tighter dealing range, updates more frequently. | |
-| Weekly | Wider dealing range for swing traders. | |
+| HTF swings via request.security + alternation rule | Existing manual-pivot logic on HTF series with alternation enforced | |
+| Reuse existing LTF swing arrays + larger lookback | Separate structural lookback, no request.security | |
+| Last swept-then-reclaimed structure | Use liquidity arrays, most recent unswept pair | |
+| Let's talk through it | Walk through tradeoffs | |
 
-**User's choice:** Daily (default TF)
-**Notes:** None
+**User's choice (free-text):** "I want you use the selected HTF's ITH and ITL as the High and low for the Premium and discount area."
+**Notes:** User introduced a fourth approach not in the original option set — reuse HTF's internal trend highs/lows (ITH/ITL) as the range boundaries. This is a clean fit because ITH/ITL already exist as first-class liquidity objects in the codebase.
+
+### Follow-up — ITH/ITL pick rule
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| A: Most recent unswept by bar_idx | Newest valid unswept ITH (top) and ITL (bottom); range rotates on new pivot or sweep | ✓ |
+| C: Most recent + alternation enforced | Same as A but enforce H/L alternation in time | |
+| B: Highest unswept ITH + lowest unswept ITL | Widest intact structure; more stable | |
+
+**User's choice:** A: Most recent unswept by bar_idx.
 
 ---
 
-## OTE Zone (62-79%)
+## Range Update + Timeframe
+
+### Timeframe + fallback
 
 | Option | Description | Selected |
 |--------|-------------|----------|
-| Two dashed lines + optional fill | Show 62% and 79% as dashed lines with subtle fill between (separate toggle). | ✓ |
-| Shaded zone only (no lines) | Just colored background fill, no boundary lines. | |
-| Label only (no visual zone) | No lines or fill, just annotate IFVG when in OTE. | |
+| Daily default, configurable, auto-fallback when chart TF >= PD TF | Default D; on HTF chart, use chart-TF ITH/ITL | ✓ |
+| Daily default, disable when chart TF >= PD TF | Same defaults, but hide feature on HTF charts | |
+| 4H default instead of Daily | More active zone rotation intraday | |
 
-**User's choice:** Two dashed lines + optional fill
-**Notes:** None
+**User's choice:** Daily default, configurable, auto-fallback.
+
+### Empty state
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| `pd_zone = "neutral"` until pair forms; no lines drawn | Graceful no-op | ✓ |
+| Use fallback (highest/lowest of visible range) until ITH/ITL forms | Provisional range from chart extremes | |
+
+**User's choice:** `pd_zone = "neutral"`, no lines.
+
+**Range update trigger resolution:** Self-resolving under pick rule A — existing `is_swept`/`is_valid` liquidity machinery handles rotation automatically. No explicit question needed.
 
 ---
 
+## Visualization
+
+### Lines and fills
+
 | Option | Description | Selected |
 |--------|-------------|----------|
-| No extra modifier | OTE is visual only. +1/-1 from premium/discount is enough. | ✓ |
-| Extra +1 bonus in OTE | Additional +1 for setups in 62-79%. | |
+| 3 dashed lines (H/EQ/L), fills off by default | Clean reference-image look | ✓ |
+| 3 dashed lines + zone fills ON by default | Faster visual read | |
+| 5 lines (H/OTE-hi/EQ/OTE-lo/L), fills off | OTE lines inline | |
 
-**User's choice:** No extra modifier
-**Notes:** None
+**User's choice:** 3 dashed lines, fills off by default.
+
+### Label format
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Price + % at right edge: `1 (24,764.25)` style | Matches reference indicator exactly | ✓ |
+| Price only, right edge | Cleaner, drops 0/0.5/1 reference | |
+| Percentage only, right edge | Loses price context | |
+
+**User's choice:** Price + % at right edge.
+
+### Line extension
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Extend from swing bar to right edge + small buffer | Typical ICT visualization | ✓ |
+| Bounded: swing bar to current bar only | Cleaner but no forward reference | |
+
+**User's choice:** Extend to right edge + buffer.
+
+### OTE zone default
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Toggle, OFF by default | Secondary feature, opt-in | ✓ |
+| Toggle, ON by default | Visible by default | |
+| Not in this phase — defer | Ship H/EQ/L only | |
+
+**User's choice:** Toggle, OFF by default.
 
 ---
 
+## Dashboard + Grading Calibration
+
+### PD Zone row (DSH-01)
+
 | Option | Description | Selected |
 |--------|-------------|----------|
-| Off by default | Traders toggle on if wanted. Cleaner initial chart. | ✓ |
-| On by default | Visible immediately when PD zones enabled. | |
+| PREMIUM/DISCOUNT/EQ/— with color coding | Full state display | ✓ |
+| PREMIUM/DISCOUNT only, no EQ state | Simpler | |
 
-**User's choice:** Off by default
-**Notes:** "Off by default but even if it is visually turned off it will still be counted in the setup grading." — Clarification: OTE visual toggle is independent from PD zone grading modifier. The +1/-1 premium/discount modifier always applies when PD zones are enabled, regardless of OTE visual state.
+**User's choice:** Full color-coded state display.
+
+### Range % row (DSH-02)
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Integer %, `—` when no range | Clean compact display | ✓ |
+| One decimal (e.g., `62.3%`) | More precise | |
+| % + directional hint (e.g., `62% ↑`) | Includes trend arrow | |
+
+**User's choice:** Integer %.
+
+### Equilibrium threshold
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Strict: EQ only at exactly 50% | Simplest grading boundary | ✓ |
+| Band: 45–55% = equilibrium | Wider EQ, rarer A+ | |
+| Band: 48–52% = equilibrium | Tighter band | |
+
+**User's choice:** Strict 50% exact.
+
+### Grade calibration (PDZ-07)
+
+| Option | Description | Selected |
+|--------|-------------|----------|
+| Ship as-is, measure, recalibrate only if needed | Avoid premature tuning | ✓ |
+| Pre-emptively tighten thresholds | Raise A+ to total>=10 | |
+| Add calibration as separate sub-phase | Explicit deferred tuning phase | |
+
+**User's choice:** Ship as-is, measure first.
 
 ---
 
-## Grade Recalibration
+## Wrap-up
 
 | Option | Description | Selected |
 |--------|-------------|----------|
-| Keep current thresholds | Same thresholds as Phase 1. PD modifier naturally differentiates. | |
-| Shift thresholds up by 1 | Compensate for expanded range. Harder to reach top grades. | |
-| Visual verification first | Keep as-is, verify on charts, adjust later if >40% cluster. | ✓ |
+| I'm ready for context | Write CONTEXT.md | ✓ |
+| Explore more gray areas | Surface additional concerns | |
 
-**User's choice:** Visual verification first
-**Notes:** Pragmatic approach — avoid premature optimization of grade thresholds.
-
----
-
-| Option | Description | Selected |
-|--------|-------------|----------|
-| Separate toggle | i_pd_grade_modifier input (default: true). Zones visible without grade impact. | ✓ |
-| Always active | If PD zones enabled, grading always affected. | |
-
-**User's choice:** Separate toggle
-**Notes:** None
-
----
-
-| Option | Description | Selected |
-|--------|-------------|----------|
-| Grade label tooltip | Add pd_zone to existing IFVG label (e.g., "A+ Bull IFVG [DISCOUNT]"). | ✓ |
-| Dashboard only | Show in dashboard, IFVG labels unchanged. | |
-| Both label and dashboard | Zone info in both places. | |
-
-**User's choice:** Grade label tooltip
-**Notes:** None
-
----
-
-| Option | Description | Selected |
-|--------|-------------|----------|
-| Frozen at inversion | pd_zone set when FVG inverts, never changes. Consistent with grade freezing. | ✓ |
-| Dynamic (updates live) | pd_zone recalculates each bar. | |
-
-**User's choice:** Frozen at inversion
-**Notes:** None
-
----
-
-## Visual Density
-
-| Option | Description | Selected |
-|--------|-------------|----------|
-| Full chart width | Lines span left to right edge. Structural reference always visible. | ✓ |
-| From swing bar to right edge | Lines start at swing detection bar. | |
-| Recent N bars + right extension | Lines cover ~100 bars plus extension. | |
-
-**User's choice:** Full chart width
-**Notes:** None
-
----
-
-| Option | Description | Selected |
-|--------|-------------|----------|
-| Off by default | Fills are opt-in. Lines + labels show structure. | ✓ |
-| On by default | Immediate visual context. More educational. | |
-
-**User's choice:** Zone fills off by default
-**Notes:** None
-
----
-
-| Option | Description | Selected |
-|--------|-------------|----------|
-| Right-edge price labels | "Swing H (100%)", "EQ (50%)", "Swing L (0%)". Clean. | ✓ |
-| Price + zone name | Show actual price levels: "5598 Swing H". | |
-| You decide | Claude picks best format. | |
-
-**User's choice:** Right-edge price labels
-**Notes:** None
+**User's choice:** Ready for context.
 
 ---
 
 ## Claude's Discretion
 
-- OTE zone colors and opacity
-- Exact line widths for zone lines
-- Pivot lookback default value
-- Dashboard row styling details
-- Edge case handling (no swings, invalid range)
+- Exact `request.security` mechanism for fetching HTF ITH/ITL (tuple vs. multiple calls vs. rebuilding ITH/ITL on chart from HTF pivots).
+- Input group placement and naming specifics (reference draft in `PHASE4_PD_ZONES_PLAN.md` is non-binding).
+- Label `bar_idx` offset from current bar, line width defaults.
+- Whether to add a lightweight `DealingRange` type vs. storing range snapshot in `var` globals.
 
 ## Deferred Ideas
 
-None — discussion stayed within phase scope
+- Directional hint on Range % (e.g., `62% ↑`) — v2 consideration.
+- Equilibrium band (45–55%) — revisit only if PDZ-07 measurement reveals need.
+- OTE as grading input — currently visual only.
+- Zone fills on by default — kept off for chart clarity.
+- Amend REQUIREMENTS.md PDZ-01 wording after Phase 2 verification (current text prescribes the failed `ta.pivothigh` approach).
+- **Three prior failed approaches** preserved in CONTEXT.md deferred section to prevent retry.
