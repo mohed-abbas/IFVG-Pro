@@ -108,6 +108,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 **Plans**: 3 plans
 
 Plans:
-- [ ] 05-01-PLAN.md — Extend IFVG type, create delivery detection function, rewrite assess_momentum() to int 0-2
-- [ ] 05-02-PLAN.md — Create scoring helpers and rewrite calculate_grade() with 5-criterion checklist scoring
-- [ ] 05-03-PLAN.md — Update tooltip rendering with 5-criterion display and verify on TradingView
+- [x] 05-01-PLAN.md — Extend IFVG type, create delivery detection function, rewrite assess_momentum() to int 0-2
+- [x] 05-02-PLAN.md — Create scoring helpers and rewrite calculate_grade() with 5-criterion checklist scoring
+- [x] 05-03-PLAN.md — Update tooltip rendering with 5-criterion display and verify on TradingView
