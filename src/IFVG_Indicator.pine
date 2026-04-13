@@ -1651,9 +1651,9 @@ check_inversions() =>
 
                             // Calculate grade (checklist scoring per D-05, D-06, D-07)
                             bool fvg_singular = is_fvg_singular(fvg)
-                            float fvg_size = fvg.top - fvg.bottom
-                            int singular_score = score_singularity(fvg_singular, fvg_size, atr_value)
-                            string grade = calculate_grade(has_sweep, has_delivery, momentum_score, dol, fvg_singular, fvg_size, "neutral", ifvg_is_bullish)
+                            float gap_size = fvg.top - fvg.bottom
+                            int singular_score = score_singularity(fvg_singular, gap_size, atr_value)
+                            string grade = calculate_grade(has_sweep, has_delivery, momentum_score, dol, fvg_singular, gap_size, "neutral", ifvg_is_bullish)
 
                             // Create IFVG
                             new_ifvg = IFVG.new(
@@ -1824,8 +1824,9 @@ render_fvg_boxes() =>
                     border_style = get_border_style(i_fvg_border_style)
                     right_edge = bar_index + i_extend_bars
 
+                    int fvg_left_edge = math.max(fvg.start_bar, bar_index - 400)
                     fvg.box_id := box.new(
-                        left = fvg.start_bar,
+                        left = fvg_left_edge,
                         top = fvg.top,
                         right = right_edge,
                         bottom = fvg.bottom,
