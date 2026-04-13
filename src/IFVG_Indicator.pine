@@ -1492,7 +1492,7 @@ score_pd_zone(string pd_zone, bool ifvg_is_bullish) =>
 // Five criteria each scored 0-2, total 0-10
 // A+ hard gates: sweep_delivery=2 AND pd_score=2 AND total>=9
 // ─────────────────────────────────────────────────────────────────────
-calculate_grade(bool has_sweep, bool has_delivery, int momentum_score, Liquidity dol_target, bool fvg_singular, float fvg_size, string pd_zone, bool ifvg_is_bullish) =>
+calculate_grade(bool has_sweep, bool has_delivery, int momentum_score, Liquidity dol_target, int singularity_score, string pd_zone, bool ifvg_is_bullish) =>
     // ── Criterion 1: Sweep + Delivery (0-2) per D-05 ──
     int sweep_delivery_score = 0
     if has_sweep and has_delivery
@@ -1503,8 +1503,8 @@ calculate_grade(bool has_sweep, bool has_delivery, int momentum_score, Liquidity
     // momentum_score is 0, 1, or 2 directly
     // ── Criterion 3: Target Clarity (0-2) ──
     int target_score = score_target_clarity(dol_target)
-    // ── Criterion 4: FVG Singularity (0-2) ──
-    int singular_score = score_singularity(fvg_singular, fvg_size, atr_value)
+    // ── Criterion 4: FVG Singularity (0-2) — use pre-computed score ──
+    int singular_score = singularity_score
     // ── Criterion 5: PD Zone (0-2) per D-09 ──
     int pd_score = score_pd_zone(pd_zone, ifvg_is_bullish)
     // ── Total Score (0-10) ──
@@ -1655,7 +1655,7 @@ check_inversions() =>
                             bool fvg_singular = is_fvg_singular(fvg)
                             float gap_size = fvg.top - fvg.bottom
                             int singular_score = score_singularity(fvg_singular, gap_size, atr_value)
-                            string grade = calculate_grade(has_sweep, has_delivery, momentum_score, dol, fvg_singular, gap_size, "neutral", ifvg_is_bullish)
+                            string grade = calculate_grade(has_sweep, has_delivery, momentum_score, dol, singular_score, "neutral", ifvg_is_bullish)
 
                             // Create IFVG
                             new_ifvg = IFVG.new(
