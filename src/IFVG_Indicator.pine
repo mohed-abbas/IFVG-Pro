@@ -99,6 +99,7 @@ type IFVG
     string momentum     // "strong_no_chop", "neutral", "weak_or_choppy"
     bool has_delivery   // true if delivery from prior FVG detected (per D-01)
     string pd_zone      // "premium", "discount", "equilibrium", "neutral"
+    int momentum_score     // 0=weak, 1=moderate, 2=strong (raw assess_momentum result)
     int singularity_score  // 0=not singular, 1=singular small, 2=singular obvious
     box box_id          // Reference to drawn box
     label label_id      // Reference to IFVG label (tiny "IFVG" text)
@@ -729,6 +730,7 @@ check_htf_inversions(array<FVG> fvg_arr, array<IFVG> ifvg_arr, float htf_c, stri
                                 momentum = "neutral",
                                 has_delivery = false,
                                 pd_zone = "neutral",
+                                momentum_score = 0,
                                 singularity_score = 0,
                                 box_id = na,
                                 label_id = na,
@@ -1676,6 +1678,7 @@ check_inversions() =>
                                 momentum = momentum_str,
                                 has_delivery = has_delivery,
                                 pd_zone = "neutral",
+                                momentum_score = momentum_score,
                                 singularity_score = singular_score,
                                 box_id = na,
                                 label_id = na,
@@ -2005,7 +2008,7 @@ render_ifvg_boxes() =>
 
                             // Build tooltip with 5-criterion scoring breakdown
                             int tt_sd = (ifvg.has_sweep and ifvg.has_delivery) ? 2 : ((ifvg.has_sweep or ifvg.has_delivery) ? 1 : 0)
-                            int tt_mom = ifvg.momentum == "strong_no_chop" ? 2 : (ifvg.momentum == "weak_or_choppy" ? 0 : 1)
+                            int tt_mom = ifvg.momentum_score
                             int tt_tgt = score_target_clarity(ifvg.dol)
                             int tt_sg = ifvg.singularity_score
                             int tt_pd = score_pd_zone(ifvg.pd_zone, ifvg.is_bullish)
