@@ -1970,6 +1970,121 @@ check_mitigations() =>
 // ══════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────
+// PD Dealing Range — clear drawing handles
+// Delete all drawing handles on a DealingRange. Safe with na refs.
+// ─────────────────────────────────────────────────────────────────────
+clear_range_drawings(DealingRange r) =>
+    if not na(r)
+        if not na(r.line_high)
+            line.delete(r.line_high)
+        if not na(r.line_eq)
+            line.delete(r.line_eq)
+        if not na(r.line_low)
+            line.delete(r.line_low)
+        if not na(r.label_high)
+            label.delete(r.label_high)
+        if not na(r.label_eq)
+            label.delete(r.label_eq)
+        if not na(r.label_low)
+            label.delete(r.label_low)
+        if not na(r.fill_premium)
+            linefill.delete(r.fill_premium)
+        if not na(r.fill_discount)
+            linefill.delete(r.fill_discount)
+        if not na(r.ote_line_top)
+            line.delete(r.ote_line_top)
+        if not na(r.ote_line_bot)
+            line.delete(r.ote_line_bot)
+        if not na(r.ote_fill)
+            linefill.delete(r.ote_fill)
+
+// ─────────────────────────────────────────────────────────────────────
+// PD Dealing Range — render 3 dashed lines + labels + optional fills/OTE
+// Creates drawings when handles are na; otherwise extends right edge.
+// ─────────────────────────────────────────────────────────────────────
+render_dealing_range(DealingRange r) =>
+    if not na(r) and r.is_valid and i_show_pd_lines
+        int right_edge = math.min(bar_index + i_extend_bars, bar_index + 400)
+        int left_edge = math.max(r.high_bar_idx, r.low_bar_idx)
+        float hi = r.high_price
+        float lo = r.low_price
+        float eq = (hi + lo) / 2.0
+        // ── Lines ──
+        if na(r.line_high)
+            r.line_high := line.new(left_edge, hi, right_edge, hi, color=i_pd_line_color, style=line.style_dashed, width=i_pd_line_width)
+        else
+            line.set_x2(r.line_high, right_edge)
+        if na(r.line_eq)
+            r.line_eq := line.new(left_edge, eq, right_edge, eq, color=i_pd_eq_color, style=line.style_dashed, width=i_pd_line_width)
+        else
+            line.set_x2(r.line_eq, right_edge)
+        if na(r.line_low)
+            r.line_low := line.new(left_edge, lo, right_edge, lo, color=i_pd_line_color, style=line.style_dashed, width=i_pd_line_width)
+        else
+            line.set_x2(r.line_low, right_edge)
+        // ── Labels (exact D-08 format: percentage (price)) ──
+        string txt_high = "1 (" + str.tostring(hi, "#.##") + ")"
+        string txt_eq   = "0.5 (" + str.tostring(eq, "#.##") + ")"
+        string txt_low  = "0 (" + str.tostring(lo, "#.##") + ")"
+        if na(r.label_high)
+            r.label_high := label.new(right_edge, hi, txt_high, style=label.style_none, textcolor=i_pd_line_color, size=size.small)
+        else
+            label.set_x(r.label_high, right_edge)
+            label.set_text(r.label_high, txt_high)
+        if na(r.label_eq)
+            r.label_eq := label.new(right_edge, eq, txt_eq, style=label.style_none, textcolor=i_pd_eq_color, size=size.small)
+        else
+            label.set_x(r.label_eq, right_edge)
+            label.set_text(r.label_eq, txt_eq)
+        if na(r.label_low)
+            r.label_low := label.new(right_edge, lo, txt_low, style=label.style_none, textcolor=i_pd_line_color, size=size.small)
+        else
+            label.set_x(r.label_low, right_edge)
+            label.set_text(r.label_low, txt_low)
+        // ── Optional zone fills (D-09, default OFF) ──
+        if i_show_pd_fills
+            if na(r.fill_premium)
+                r.fill_premium := linefill.new(r.line_high, r.line_eq, color.new(i_bearish_color, 92))
+            if na(r.fill_discount)
+                r.fill_discount := linefill.new(r.line_eq, r.line_low, color.new(i_bullish_color, 92))
+        else
+            if not na(r.fill_premium)
+                linefill.delete(r.fill_premium)
+                r.fill_premium := na
+            if not na(r.fill_discount)
+                linefill.delete(r.fill_discount)
+                r.fill_discount := na
+        // ── Optional OTE band 62%-79% (D-10, default OFF, visual only) ──
+        if i_show_ote
+            float range_span = hi - lo
+            float ote_low_price = lo + range_span * 0.62
+            float ote_high_price = lo + range_span * 0.79
+            if na(r.ote_line_top)
+                r.ote_line_top := line.new(left_edge, ote_high_price, right_edge, ote_high_price, color=color.new(#AB47BC, 70), style=line.style_dotted)
+            else
+                line.set_x2(r.ote_line_top, right_edge)
+                line.set_y1(r.ote_line_top, ote_high_price)
+                line.set_y2(r.ote_line_top, ote_high_price)
+            if na(r.ote_line_bot)
+                r.ote_line_bot := line.new(left_edge, ote_low_price, right_edge, ote_low_price, color=color.new(#AB47BC, 70), style=line.style_dotted)
+            else
+                line.set_x2(r.ote_line_bot, right_edge)
+                line.set_y1(r.ote_line_bot, ote_low_price)
+                line.set_y2(r.ote_line_bot, ote_low_price)
+            if na(r.ote_fill)
+                r.ote_fill := linefill.new(r.ote_line_top, r.ote_line_bot, color.new(#AB47BC, 92))
+        else
+            if not na(r.ote_line_top)
+                line.delete(r.ote_line_top)
+                r.ote_line_top := na
+            if not na(r.ote_line_bot)
+                line.delete(r.ote_line_bot)
+                r.ote_line_bot := na
+            if not na(r.ote_fill)
+                linefill.delete(r.ote_fill)
+                r.ote_fill := na
+
+// ─────────────────────────────────────────────────────────────────────
 // Render Active FVG Boxes
 // ─────────────────────────────────────────────────────────────────────
 render_fvg_boxes() =>
@@ -2641,10 +2756,23 @@ if i_show_indicator
     if not na(sel_ith) and not na(sel_itl) and sel_ith.level > sel_itl.level
         bool rotated = na(g_current_range) or not g_current_range.is_valid or g_current_range.high_bar_idx != sel_ith.bar_idx or g_current_range.low_bar_idx != sel_itl.bar_idx
         if rotated
+            clear_range_drawings(g_current_range)
             g_current_range := DealingRange.new(high_price=sel_ith.level, low_price=sel_itl.level, high_bar_idx=sel_ith.bar_idx, low_bar_idx=sel_itl.bar_idx, is_valid=true, line_high=na, line_eq=na, line_low=na, label_high=na, label_eq=na, label_low=na, fill_premium=na, fill_discount=na, ote_line_top=na, ote_line_bot=na, ote_fill=na)
     else
-        if not na(g_current_range)
+        if not na(g_current_range) and g_current_range.is_valid
+            clear_range_drawings(g_current_range)
             g_current_range.is_valid := false
+            g_current_range.line_high := na
+            g_current_range.line_eq := na
+            g_current_range.line_low := na
+            g_current_range.label_high := na
+            g_current_range.label_eq := na
+            g_current_range.label_low := na
+            g_current_range.fill_premium := na
+            g_current_range.fill_discount := na
+            g_current_range.ote_line_top := na
+            g_current_range.ote_line_bot := na
+            g_current_range.ote_fill := na
 
     // ─────────────────────────────────────────────────────────────────
     // Step 5: Check for LTF inversions (FVG → IFVG)
@@ -2712,4 +2840,5 @@ if i_show_indicator
             render_htf_ifvg_boxes(g_htf2_ifvg_array, htf2_label)
 
     render_liquidity_lines()
+    render_dealing_range(g_current_range)
     render_dashboard(current_latest_ifvg)
