@@ -2605,7 +2605,7 @@ find_most_recent_ifvg() =>
 // SECTION 11: DASHBOARD (Phase 3 Enhanced)
 // ══════════════════════════════════════════════════════════════════════
 
-var table dashboard = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+var table dashboard = table.new(position.top_right, 2, 12, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
 
 render_dashboard(IFVG latest_ifvg) =>
     if barstate.islast
@@ -2671,6 +2671,39 @@ render_dashboard(IFVG latest_ifvg) =>
                 htf_tf_text := htf_tf_text + " / " + get_tf_label(i_htf_timeframe_2)
         table.cell(dashboard, 0, 9, "HTF:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
         table.cell(dashboard, 1, 9, htf_tf_text, text_color=color.white, text_size=size.small, text_halign=text.align_right)
+
+        // ── PD Zone row (DSH-01, D-11) ─────────────────────────────
+        string pd_text = "—"
+        color pd_color = color.gray
+        int row_pd = 10
+        int row_range = 11
+        if not na(g_current_range) and g_current_range.is_valid
+            float current_mid = close
+            float hi_pd = g_current_range.high_price
+            float lo_pd = g_current_range.low_price
+            if hi_pd > lo_pd
+                float eq_pd = (hi_pd + lo_pd) / 2.0
+                if current_mid > eq_pd
+                    pd_text := "PREMIUM"
+                    pd_color := color.red
+                else if current_mid < eq_pd
+                    pd_text := "DISCOUNT"
+                    pd_color := color.green
+                else
+                    pd_text := "EQ"
+                    pd_color := color.yellow
+        table.cell(dashboard, 0, row_pd, "PD Zone:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+        table.cell(dashboard, 1, row_pd, pd_text, text_color=pd_color, text_size=size.small, text_halign=text.align_right)
+
+        // ── Range % row (DSH-02, D-12) ─────────────────────────────
+        string range_pct_text = "—"
+        if not na(g_current_range) and g_current_range.is_valid
+            int pct = compute_range_percent(close)
+            if not na(pct)
+                int pct_clamped = int(math.max(0, math.min(100, pct)))
+                range_pct_text := str.tostring(pct_clamped) + "%"
+        table.cell(dashboard, 0, row_range, "Range %:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
+        table.cell(dashboard, 1, row_range, range_pct_text, text_color=color.white, text_size=size.small, text_halign=text.align_right)
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 12: MAIN EXECUTION LOOP
