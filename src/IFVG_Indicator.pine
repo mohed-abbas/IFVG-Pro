@@ -2759,9 +2759,9 @@ if i_show_indicator
     // Step 4C: PD zone pipeline (Phase 2 — runs before check_inversions)
     // ─────────────────────────────────────────────────────────────────
     if barstate.isconfirmed
-        bool pd_bar_changed = na(g_prev_pd_bar) or time("", i_pd_timeframe) != g_prev_pd_bar
+        bool pd_bar_changed = na(g_prev_pd_bar) or time(i_pd_timeframe) != g_prev_pd_bar
         if pd_bar_changed
-            g_prev_pd_bar := time("", i_pd_timeframe)
+            g_prev_pd_bar := time(i_pd_timeframe)
         if not na(pd_pivot_high_raw) and pd_bar_changed
             array.push(g_pd_swing_highs, SwingPoint.new(price=pd_pivot_high_raw, bar_idx=bar_index, is_high=true, is_internal=false, is_valid=true))
             if array.size(g_pd_swing_highs) > 50
