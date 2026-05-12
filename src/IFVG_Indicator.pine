@@ -195,6 +195,7 @@ i_show_ote                    = input.bool(false, "Show OTE Band (62%-79%)",    
 i_pd_line_color               = input.color(color.white, "PD Line Color",           group=GROUP_PD_ZONES)
 i_pd_eq_color                 = input.color(color.yellow, "EQ Line Color",          group=GROUP_PD_ZONES)
 i_pd_line_width               = input.int(1, "PD Line Width", minval=1, maxval=4,   group=GROUP_PD_ZONES)
+i_pd_sweep_min_atr_mult       = input.float(0.05, "PD Sweep Min Wick (ATR mult)", minval=0.0, maxval=1.0, step=0.01, group=GROUP_PD_ZONES, tooltip="Minimum wick protrusion beyond an ITH/ITL (as fraction of chart ATR) required to mark it swept. Higher = less sensitive. 0 disables the gate.")
 
 // ─────────────────────────────────────────────────────────────────────
 // Liquidity Detection Settings (Phase 2)
@@ -1210,14 +1211,15 @@ check_liquidity_sweeps() =>
                             liq.swept_bar := bar_index
                             liq.is_valid := false  // No more touches count
 
-                // Also check for complete break (close through) - invalidates without sweep marker
+                // EQH/EQL close-through invalidation (formation broken).
+                // ITH/ITL persist as dealing-range references — only sweep-and-revert marks them swept.
                 if liq.is_valid and not liq.is_swept
-                    if (liq.liq_type == "EQH" or liq.liq_type == "ITH")
+                    if liq.liq_type == "EQH"
                         if close > liq.level
-                            liq.is_valid := false  // Broken through, no longer valid for EQH
-                    if (liq.liq_type == "EQL" or liq.liq_type == "ITL")
+                            liq.is_valid := false
+                    if liq.liq_type == "EQL"
                         if close < liq.level
-                            liq.is_valid := false  // Broken through, no longer valid for EQL
+                            liq.is_valid := false
 
 // ─────────────────────────────────────────────────────────────────────
 // Create PD Internal Highs/Lows (PD_ITH/PD_ITL) — mirror of create_internal_levels()
@@ -1264,35 +1266,58 @@ create_pd_internal_levels() =>
 check_pd_sweeps() =>
     int pd_liq_size = array.size(g_pd_liquidity_array)
     if barstate.isconfirmed and pd_liq_size > 0
+        float min_protrusion = (na(atr_value) ? 0.0 : atr_value * i_pd_sweep_min_atr_mult)
+        // Cycle 5: recompute the confirmation-lag window so close-through invalidation
+        // can be scoped to pivots that are still inside it. Cycle 3 introduced
+        // close-through to drop levels that materialise already broken during the lag,
+        // but applied unscoped it also nukes legitimate older pivots once a trend
+        // closes past them — leaving cycle 4's fallback with zero candidates on the
+        // trend-counter side. Same formula as the Step 4C push uses.
+        float sweep_pd_secs    = timeframe.in_seconds(i_pd_timeframe)
+        float sweep_chart_secs = timeframe.in_seconds(timeframe.period)
+        float sweep_ratio      = sweep_chart_secs > 0 ? (sweep_pd_secs / sweep_chart_secs) : 1.0
+        int sweep_lag_bars     = int(math.max(1, math.round((i_pd_swing_lookback + 1) * sweep_ratio)))
         for i = 0 to pd_liq_size - 1
             if i < pd_liq_size
                 liq = array.get(g_pd_liquidity_array, i)
                 if not liq.is_swept and liq.is_valid
+                    // Wick-and-revert sweep (existing behavior, ATR-gated). Applies at
+                    // any age — a legitimate wick-sweep is meaningful whenever it occurs.
                     if liq.liq_type == "PD_ITH"
-                        if high > liq.level and close < liq.level
+                        if (high - liq.level) > min_protrusion and close < liq.level
                             liq.is_swept := true
                             liq.swept_bar := bar_index
                             liq.is_valid := false
                     if liq.liq_type == "PD_ITL"
-                        if low < liq.level and close > liq.level
+                        if (liq.level - low) > min_protrusion and close > liq.level
                             liq.is_swept := true
                             liq.swept_bar := bar_index
                             liq.is_valid := false
-                if liq.is_valid and not liq.is_swept
-                    if liq.liq_type == "PD_ITH"
-                        if close > liq.level
-                            liq.is_valid := false
-                    if liq.liq_type == "PD_ITL"
-                        if close < liq.level
-                            liq.is_valid := false
+                    // Close-through invalidation (cycle 3, time-gated in cycle 5):
+                    // ONLY apply while the pivot is inside its confirmation-lag window.
+                    // Inside the window a close-through means the level was "born already
+                    // broken" — drop it. Outside the window the pivot is a legitimate
+                    // historical structural high/low that survives trend penetration —
+                    // leave it for cycle 4's structural-extremes fallback to anchor on
+                    // during steep trends. The wick-and-revert sweep above still applies
+                    // at all ages, so genuine sweeps are still marked.
+                    if liq.is_valid and not liq.is_swept
+                        int age = bar_index - liq.bar_idx
+                        if age <= sweep_lag_bars
+                            if liq.liq_type == "PD_ITH"
+                                if close > liq.level
+                                    liq.is_valid := false
+                            if liq.liq_type == "PD_ITL"
+                                if close < liq.level
+                                    liq.is_valid := false
 
 // ─────────────────────────────────────────────────────────────────────
-// Select dealing-range source array: PD array when chart TF < PD TF,
-// otherwise chart-TF g_liquidity_array fallback (D-05).
+// Dealing-range source is always g_pd_liquidity_array — fed by request.security
+// at the configured PD TF, so the PD input always drives what the user sees,
+// regardless of chart TF.
 // ─────────────────────────────────────────────────────────────────────
 select_dealing_range_source() =>
-    array<Liquidity> result = is_pd_tf_higher() ? g_pd_liquidity_array : g_liquidity_array
-    result
+    g_pd_liquidity_array
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 7: BE POINT & GRADING FUNCTIONS (Phase 2)
@@ -2762,30 +2787,140 @@ if i_show_indicator
         bool pd_bar_changed = na(g_prev_pd_bar) or time(i_pd_timeframe) != g_prev_pd_bar
         if pd_bar_changed
             g_prev_pd_bar := time(i_pd_timeframe)
+        // Cycle 3: record the TRUE chart-bar where the pivot occurred, not the
+        // chart-bar where request.security exposed it. ta.pivothigh(N,N) confirms
+        // a pivot N HTF bars after the swing; with lookahead_off the value first
+        // surfaces on the first chart bar of HTF (X+N+1). So the pivot is roughly
+        // (N+1) HTF bars == (N+1)*ratio chart bars earlier than `bar_index` at push.
+        // Pinning the level to its true bar fixes line rendering (was anchored too
+        // far right) and stabilises the cycle-2 chronological walkback when the
+        // walkback compares an ITH and ITL pushed on the same chart bar.
+        float pd_secs    = timeframe.in_seconds(i_pd_timeframe)
+        float chart_secs = timeframe.in_seconds(timeframe.period)
+        float ratio      = chart_secs > 0 ? (pd_secs / chart_secs) : 1.0
+        int lag_bars     = int(math.max(1, math.round((i_pd_swing_lookback + 1) * ratio)))
+        int pivot_bar    = int(math.max(0, bar_index - lag_bars))
         if not na(pd_pivot_high_raw) and pd_bar_changed
-            array.push(g_pd_swing_highs, SwingPoint.new(price=pd_pivot_high_raw, bar_idx=bar_index, is_high=true, is_internal=false, is_valid=true))
+            array.push(g_pd_swing_highs, SwingPoint.new(price=pd_pivot_high_raw, bar_idx=pivot_bar, is_high=true, is_internal=false, is_valid=true))
             if array.size(g_pd_swing_highs) > 50
                 array.shift(g_pd_swing_highs)
         if not na(pd_pivot_low_raw) and pd_bar_changed
-            array.push(g_pd_swing_lows, SwingPoint.new(price=pd_pivot_low_raw, bar_idx=bar_index, is_high=false, is_internal=false, is_valid=true))
+            array.push(g_pd_swing_lows, SwingPoint.new(price=pd_pivot_low_raw, bar_idx=pivot_bar, is_high=false, is_internal=false, is_valid=true))
             if array.size(g_pd_swing_lows) > 50
                 array.shift(g_pd_swing_lows)
     create_pd_internal_levels()
     check_pd_sweeps()
-    // Select newest unswept PD ITH and PD ITL (D-02).
+    // Dealing range = most recent valid (unswept) PD_ITH paired with most recent valid PD_ITL.
+    // ICT methodology: the freshest unswept liquidity on each side defines the current
+    // dealing range, regardless of price's position within it. If the two newest cross
+    // (ITH.level <= ITL.level, an inverted anchor), walk back the chronologically OLDER
+    // anchor to find an earlier instance of that side that yields ITH.level > ITL.level.
+    // No "narrowest containing price" preference — that biases toward micro-consolidations
+    // and ignores the structural range visible across the chart.
     array<Liquidity> src = select_dealing_range_source()
-    Liquidity sel_ith = na
-    Liquidity sel_itl = na
+    array<Liquidity> ith_candidates = array.new<Liquidity>()
+    array<Liquidity> itl_candidates = array.new<Liquidity>()
     if array.size(src) > 0
         for i = array.size(src) - 1 to 0
             Liquidity liq = array.get(src, i)
             if liq.is_valid and not liq.is_swept
-                if (liq.liq_type == "PD_ITH" or liq.liq_type == "ITH") and na(sel_ith)
-                    sel_ith := liq
-                if (liq.liq_type == "PD_ITL" or liq.liq_type == "ITL") and na(sel_itl)
-                    sel_itl := liq
-                if not na(sel_ith) and not na(sel_itl)
+                if (liq.liq_type == "PD_ITH" or liq.liq_type == "ITH")
+                    array.push(ith_candidates, liq)
+                if (liq.liq_type == "PD_ITL" or liq.liq_type == "ITL")
+                    array.push(itl_candidates, liq)
+    Liquidity sel_ith = na
+    Liquidity sel_itl = na
+    int n_ith = array.size(ith_candidates)
+    int n_itl = array.size(itl_candidates)
+    if n_ith > 0 and n_itl > 0
+        // Candidates were pushed newest-first (outer loop walks size-1 -> 0), so
+        // index 0 is the most recent valid level on each side.
+        int ith_idx = 0
+        int itl_idx = 0
+        Liquidity cand_ith = array.get(ith_candidates, ith_idx)
+        Liquidity cand_itl = array.get(itl_candidates, itl_idx)
+        bool resolved = cand_ith.level > cand_itl.level
+        // Walk back the older of the two anchors until non-crossing pair found.
+        // Bounded by total candidate count to guarantee termination.
+        int safety_iters = n_ith + n_itl
+        while (not resolved) and safety_iters > 0
+            if cand_ith.bar_idx <= cand_itl.bar_idx
+                // ITH is older (or same age) -- advance to next older ITH
+                ith_idx := ith_idx + 1
+                if ith_idx >= n_ith
                     break
+                cand_ith := array.get(ith_candidates, ith_idx)
+            else
+                // ITL is older -- advance to next older ITL
+                itl_idx := itl_idx + 1
+                if itl_idx >= n_itl
+                    break
+                cand_itl := array.get(itl_candidates, itl_idx)
+            resolved := cand_ith.level > cand_itl.level
+            safety_iters := safety_iters - 1
+        if resolved
+            sel_ith := cand_ith
+            sel_itl := cand_itl
+        else
+            // Cycle 4: structural-extremes fallback. When newest-newest walkback
+            // exhausts (every newest ITH sits below every newest ITL — happens in
+            // strong directional trends where recent pivots cluster on one side of
+            // price), fall back to ICT impulse-leg interpretation: dealing range =
+            // highest unswept ITH paired with lowest unswept ITL across all valid
+            // candidates. This preserves a structurally meaningful range during
+            // steep trending moves rather than dropping the zone entirely.
+            Liquidity hi_ith = array.get(ith_candidates, 0)
+            Liquidity lo_itl = array.get(itl_candidates, 0)
+            // Guard `for a to b` against ascending range when n == 1 (Pine `to`
+            // is bidirectional — `for k = 1 to 0` would iterate k=1,0 and OOB).
+            if n_ith >= 2
+                for k = 1 to n_ith - 1
+                    Liquidity ck = array.get(ith_candidates, k)
+                    if ck.level > hi_ith.level
+                        hi_ith := ck
+            if n_itl >= 2
+                for k = 1 to n_itl - 1
+                    Liquidity ck = array.get(itl_candidates, k)
+                    if ck.level < lo_itl.level
+                        lo_itl := ck
+            if hi_ith.level > lo_itl.level
+                sel_ith := hi_ith
+                sel_itl := lo_itl
+    // Cycle 5: final safety-net fallback. When ONE side has zero valid candidates
+    // (e.g. a sustained bullish trend has invalidated every ITH via wick-revert
+    // sweeps and cycle-3 close-through inside the lag window) but the other side
+    // still has valid candidates, the primary branch above is skipped entirely
+    // (gated on n_ith > 0 AND n_itl > 0) and the PD zone collapses to blank even
+    // though structural extremes exist in the swept/invalid pool. Recover by
+    // scanning the FULL PD liquidity array (including swept and invalid) for the
+    // highest PD_ITH and lowest PD_ITL, but ONLY on whichever side is empty —
+    // a side with valid candidates always prefers a valid pick from the cycle-4
+    // path above. This is a pure rendering-safety net; it does not change sweep
+    // semantics or pollute candidate pools used elsewhere.
+    if na(sel_ith) or na(sel_itl)
+        Liquidity safety_ith = sel_ith
+        Liquidity safety_itl = sel_itl
+        int src_n = array.size(src)
+        if src_n > 0
+            // Scan the full array for highest PD_ITH side
+            if na(safety_ith)
+                for k = 0 to src_n - 1
+                    if k < src_n
+                        Liquidity ck = array.get(src, k)
+                        if (ck.liq_type == "PD_ITH" or ck.liq_type == "ITH")
+                            if na(safety_ith) or ck.level > safety_ith.level
+                                safety_ith := ck
+            // Scan the full array for lowest PD_ITL side
+            if na(safety_itl)
+                for k = 0 to src_n - 1
+                    if k < src_n
+                        Liquidity ck = array.get(src, k)
+                        if (ck.liq_type == "PD_ITL" or ck.liq_type == "ITL")
+                            if na(safety_itl) or ck.level < safety_itl.level
+                                safety_itl := ck
+        if not na(safety_ith) and not na(safety_itl) and safety_ith.level > safety_itl.level
+            sel_ith := safety_ith
+            sel_itl := safety_itl
     if not na(sel_ith) and not na(sel_itl) and sel_ith.level > sel_itl.level
         bool rotated = na(g_current_range) or not g_current_range.is_valid or g_current_range.high_bar_idx != sel_ith.bar_idx or g_current_range.low_bar_idx != sel_itl.bar_idx
         if rotated
