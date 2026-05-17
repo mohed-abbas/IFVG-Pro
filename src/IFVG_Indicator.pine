@@ -2226,10 +2226,10 @@ render_ifvg_boxes() =>
 
                     // IFVG box: translucent gray with NO borders
                     ifvg_bg_color = color.new(i_ifvg_box_color, i_ifvg_box_opacity)
-                    right_edge = bar_index + i_extend_bars
+                    right_edge = ifvg.inversion_bar + i_extend_bars
 
                     // Draw IFVG box (gray, no borders)
-                    int ifvg_left_edge = math.max(ifvg.start_bar, bar_index - 400)
+                    int ifvg_left_edge = math.max(ifvg.inversion_bar, bar_index - 400)
                     ifvg.box_id := box.new(
                         left = ifvg_left_edge,
                         top = ifvg.top,
@@ -2385,7 +2385,7 @@ render_htf_fvg_boxes(array<FVG> arr, string tf_label) =>
                         base_color = fvg.is_bullish ? i_bullish_color : i_bearish_color
                         bg_color = color.new(base_color, i_htf_box_opacity)
                         border_color = base_color
-                        right_edge = bar_index + i_extend_bars
+                        right_edge = fvg.start_bar + i_extend_bars
                         // Clamp left edge to prevent "bar index too far" error (max_bars_back = 500)
                         int left_edge = math.max(fvg.start_bar, bar_index - 400)
 
@@ -2438,9 +2438,9 @@ render_htf_ifvg_boxes(array<IFVG> arr, string tf_label) =>
                         // HTF IFVG boxes: use gray with dashed thick border
                         bg_color = color.new(color.gray, i_htf_box_opacity)
                         border_color = ifvg.is_bullish ? i_bullish_color : i_bearish_color
-                        right_edge = bar_index + i_extend_bars
+                        right_edge = ifvg.inversion_bar + i_extend_bars
                         // Clamp left edge to prevent "bar index too far" error (max_bars_back = 500)
-                        int left_edge = math.max(ifvg.start_bar, bar_index - 400)
+                        int left_edge = math.max(ifvg.inversion_bar, bar_index - 400)
 
                         ifvg.box_id := box.new(
                             left = left_edge,
