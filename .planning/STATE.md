@@ -86,8 +86,15 @@ None yet.
 
 None -- FIX-01 resolved (singularity fix), FIX-03 resolved (security consolidation from 14 to 2 calls).
 
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260517-nlq | FVG merge fix — block merge across opposite-color candles | 2026-05-17 | 23c84e7 | [260517-nlq](./quick/260517-nlq-implement-fvg-merge-fix-from-planning-to/) |
+
 ## Session Continuity
 
+Last activity: 2026-05-17 - Completed quick task 260517-nlq: FVG merge fix — block merge across opposite-color candles
 Last session: 2026-04-13T23:31:30.130Z
 Stopped at: Phase 2 context gathered
 Resume file: .planning/phases/02-pd-zone-detection-grading-integration/02-CONTEXT.md
