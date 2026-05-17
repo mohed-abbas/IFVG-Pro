@@ -107,6 +107,7 @@ type IFVG
     line sl_line_id     // Reference to SL line
     line entry_line_id  // Reference to entry line (at inversion close)
     label entry_label_id // Reference to entry line label (grade + direction)
+    line formation_divider_id // Vertical line at inversion_bar dividing formation from live zone
 
 // ─────────────────────────────────────────────────────────────
 // DealingRange — snapshot of the current HTF dealing range (PDZ-01..PDZ-08)
@@ -161,6 +162,8 @@ i_show_active_fvg   = input.bool(true, "Show Active FVGs", group=GROUP_FVG,
                       tooltip="Display FVGs that haven't been inverted yet")
 i_show_ifvg         = input.bool(true, "Show Inverted FVGs (IFVG)", group=GROUP_FVG,
                       tooltip="Display FVGs that have been inverted")
+i_show_formation_divider = input.bool(true, "Show Formation Divider", group=GROUP_FVG,
+                      tooltip="Draw a thin vertical line at the inversion bar separating the original FVG formation (left) from the post-inversion live zone (right).")
 
 // ─────────────────────────────────────────────────────────────────────
 // Higher Timeframe Settings (Phase 3)
@@ -417,6 +420,8 @@ cleanup_ifvg_array() =>
             line.delete(old_ifvg.entry_line_id)
         if not na(old_ifvg.entry_label_id)
             label.delete(old_ifvg.entry_label_id)
+        if not na(old_ifvg.formation_divider_id)
+            line.delete(old_ifvg.formation_divider_id)
 
 cleanup_liquidity_array() =>
     while array.size(g_liquidity_array) > i_max_liquidity
@@ -545,46 +550,24 @@ merge_with_existing_fvg(FVG new_fvg) =>
             if existing.is_bullish == new_fvg.is_bullish and existing.status == "active"
                 int bar_distance = int(math.abs(new_fvg.end_bar - existing.end_bar))
                 if bar_distance <= 5
-                    // Opposite-color scan: block merge when any opposite-color
-                    // candle exists strictly between the two FVGs' 3-candle windows.
-                    // Dojis (close == open) are neutral and never block.
+                    // Combined-span scan: block merge when ANY opposite-color
+                    // candle exists anywhere across the full combined region
+                    // [existing.start_bar, new_fvg.end_bar]. This single sweep
+                    // covers both 3-candle FVG windows AND the gap between them,
+                    // including outer candles. Dojis are neutral and never block.
                     bool opposite_found = false
-                    int scan_from = existing.end_bar + 1
-                    int scan_to = new_fvg.start_bar - 1
-                    if scan_to >= scan_from
-                        for k = scan_from to scan_to
+                    int span_from = int(math.min(existing.start_bar, new_fvg.start_bar))
+                    int span_to = int(math.max(existing.end_bar, new_fvg.end_bar))
+                    if span_to >= span_from
+                        for k = span_from to span_to
                             int offset = bar_index - k
-                            if new_fvg.is_bullish
-                                if close[offset] < open[offset]
-                                    opposite_found := true
-                            if not new_fvg.is_bullish
-                                if close[offset] > open[offset]
-                                    opposite_found := true
-                    // Also check the displacement (middle) candle of the NEW FVG
-                    // at absolute bar new_fvg.end_bar - 1. Required for adjacent
-                    // FVGs (bar_distance 1-2) where the scan range above is empty.
-                    if not opposite_found
-                        int new_mid_offset = bar_index - (new_fvg.end_bar - 1)
-                        if new_mid_offset >= 0
-                            if new_fvg.is_bullish
-                                if close[new_mid_offset] < open[new_mid_offset]
-                                    opposite_found := true
-                            if not new_fvg.is_bullish
-                                if close[new_mid_offset] > open[new_mid_offset]
-                                    opposite_found := true
-                    // Also check the displacement (middle) candle of the EXISTING
-                    // FVG at absolute bar existing.end_bar - 1. Catches the case
-                    // where the prior FVG itself formed via wick alignment with
-                    // an opposite-color middle candle.
-                    if not opposite_found
-                        int existing_mid_offset = bar_index - (existing.end_bar - 1)
-                        if existing_mid_offset >= 0
-                            if new_fvg.is_bullish
-                                if close[existing_mid_offset] < open[existing_mid_offset]
-                                    opposite_found := true
-                            if not new_fvg.is_bullish
-                                if close[existing_mid_offset] > open[existing_mid_offset]
-                                    opposite_found := true
+                            if offset >= 0
+                                if new_fvg.is_bullish
+                                    if close[offset] < open[offset]
+                                        opposite_found := true
+                                if not new_fvg.is_bullish
+                                    if close[offset] > open[offset]
+                                        opposite_found := true
                     if not opposite_found
                         // Merge: extend existing FVG to encompass new one
                         float combined_top = math.max(existing.top, new_fvg.top)
@@ -862,7 +845,8 @@ check_htf_inversions(array<FVG> fvg_arr, array<IFVG> ifvg_arr, float htf_c, stri
                                 be_line_id = na,
                                 sl_line_id = na,
                                 entry_line_id = na,
-                                entry_label_id = na
+                                entry_label_id = na,
+                                formation_divider_id = na
                             )
 
                             array.push(ifvg_arr, new_ifvg)
@@ -1914,7 +1898,8 @@ check_inversions() =>
                                 be_line_id = na,
                                 sl_line_id = na,
                                 entry_line_id = na,
-                                entry_label_id = na
+                                entry_label_id = na,
+                                formation_divider_id = na
                             )
 
                             array.push(g_ifvg_array, new_ifvg)
@@ -2025,6 +2010,8 @@ check_mitigations() =>
                             line.delete(ifvg.entry_line_id)
                         if not na(ifvg.entry_label_id)
                             label.delete(ifvg.entry_label_id)
+                        if not na(ifvg.formation_divider_id)
+                            line.delete(ifvg.formation_divider_id)
 
                         array.remove(g_ifvg_array, i)
                         mitigation_count += 1
@@ -2230,6 +2217,9 @@ render_ifvg_boxes() =>
                 if not na(ifvg.entry_label_id)
                     label.delete(ifvg.entry_label_id)
                     ifvg.entry_label_id := na
+                if not na(ifvg.formation_divider_id)
+                    line.delete(ifvg.formation_divider_id)
+                    ifvg.formation_divider_id := na
 
                 // Check HTF bias alignment (Phase 3)
                 bool htf_aligned = true
@@ -2389,6 +2379,23 @@ render_ifvg_boxes() =>
                                 yloc = yloc.price,
                                 tooltip = tooltip_text
                             )
+
+                    // ═══════════════════════════════════════════════════════════
+                    // Draw Formation Divider — thin vertical line at inversion_bar
+                    // Visually separates the original FVG formation (left of line)
+                    // from the post-inversion live zone projection (right of line).
+                    // ═══════════════════════════════════════════════════════════
+                    if i_show_formation_divider and not na(ifvg.inversion_bar)
+                        ifvg.formation_divider_id := line.new(
+                            x1 = ifvg.inversion_bar,
+                            y1 = ifvg.top,
+                            x2 = ifvg.inversion_bar,
+                            y2 = ifvg.bottom,
+                            color = color.new(color.gray, 30),
+                            style = line.style_dotted,
+                            width = 1,
+                            extend = extend.none
+                        )
 
 // ─────────────────────────────────────────────────────────────────────
 // Render HTF FVG Boxes (Phase 3)
