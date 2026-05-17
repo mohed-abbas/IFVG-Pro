@@ -560,6 +560,31 @@ merge_with_existing_fvg(FVG new_fvg) =>
                             if not new_fvg.is_bullish
                                 if close[offset] > open[offset]
                                     opposite_found := true
+                    // Also check the displacement (middle) candle of the NEW FVG
+                    // at absolute bar new_fvg.end_bar - 1. Required for adjacent
+                    // FVGs (bar_distance 1-2) where the scan range above is empty.
+                    if not opposite_found
+                        int new_mid_offset = bar_index - (new_fvg.end_bar - 1)
+                        if new_mid_offset >= 0
+                            if new_fvg.is_bullish
+                                if close[new_mid_offset] < open[new_mid_offset]
+                                    opposite_found := true
+                            if not new_fvg.is_bullish
+                                if close[new_mid_offset] > open[new_mid_offset]
+                                    opposite_found := true
+                    // Also check the displacement (middle) candle of the EXISTING
+                    // FVG at absolute bar existing.end_bar - 1. Catches the case
+                    // where the prior FVG itself formed via wick alignment with
+                    // an opposite-color middle candle.
+                    if not opposite_found
+                        int existing_mid_offset = bar_index - (existing.end_bar - 1)
+                        if existing_mid_offset >= 0
+                            if new_fvg.is_bullish
+                                if close[existing_mid_offset] < open[existing_mid_offset]
+                                    opposite_found := true
+                            if not new_fvg.is_bullish
+                                if close[existing_mid_offset] > open[existing_mid_offset]
+                                    opposite_found := true
                     if not opposite_found
                         // Merge: extend existing FVG to encompass new one
                         float combined_top = math.max(existing.top, new_fvg.top)
