@@ -67,13 +67,16 @@ Render functions for historical setup graphics (LTF IFVG box + BE/SL/entry lines
 
 ## Resolution
 
-**root_cause:** `render_ifvg_boxes`, `render_htf_fvg_boxes`, and `render_htf_ifvg_boxes` use `bar_index + i_extend_bars` for the right edge and `bar_index - 400` to clamp the left edge — so every historical setup's box/lines/labels slide rightward each confirmed bar instead of staying anchored to the inversion/formation bar.
+**root_cause:** `render_ifvg_boxes`, `render_htf_fvg_boxes`, and `render_htf_ifvg_boxes` use `bar_index + i_extend_bars` for the right edge and `bar_index - 400` to clamp the left edge — so every historical setup's box/lines/labels slide rightward each confirmed bar instead of staying anchored to the formation bar.
 
-**fix:** Anchor historical setup graphics to their stored bars:
-- LTF IFVG (in `render_ifvg_boxes`): left = `ifvg.inversion_bar`, right = `ifvg.inversion_bar + i_extend_bars`. Applied to box, SL line, BE line, entry line, and entry label.
-- HTF active FVG (in `render_htf_fvg_boxes`): left = `fvg.start_bar`, right = `fvg.start_bar + i_extend_bars` (still anchored historically; recent FVGs will visually extend forward, older ones stay put).
-- HTF IFVG (in `render_htf_ifvg_boxes`): left = `ifvg.inversion_bar`, right = `ifvg.inversion_bar + i_extend_bars`.
-- Active LTF FVG (`render_fvg_boxes`) left UNCHANGED — those are live candidate zones that should project to the current bar.
+**fix (revised 2026-05-17 after user feedback):** The first revision anchored both edges to `ifvg.inversion_bar`, but the IFVG box should span FROM the **original FVG's first bar** TO the current bar + extend (the zone remains live until mitigated). Correct anchoring:
+- LTF IFVG (in `render_ifvg_boxes`): left = `math.max(ifvg.start_bar, bar_index - 400)` (anchors at the source FVG's first candle, not the inversion bar), right = `bar_index + i_extend_bars` (projects forward — live zone). SL/BE lines follow the same `ifvg_left_edge` / `right_edge` so they span the full zone.
+- LTF IFVG entry line/label (intentionally different): left = `math.max(ifvg.inversion_bar, bar_index - 400)`, right = `right_edge`. The entry line is drawn at the inversion candle's close — it didn't exist before inversion, so it logically begins at `inversion_bar`.
+- HTF active FVG (in `render_htf_fvg_boxes`): left = `math.max(fvg.start_bar, bar_index - 400)` (unchanged), right = `bar_index + i_extend_bars` (projects forward — live zone).
+- HTF IFVG (in `render_htf_ifvg_boxes`): left = `math.max(ifvg.start_bar, bar_index - 400)` (source HTF FVG's first bar, not inversion), right = `bar_index + i_extend_bars`.
+- Active LTF FVG (`render_fvg_boxes`) UNCHANGED — those are live candidate zones, behaved correctly already.
+
+The `bar_index - 400` floor remains as a defensive clamp for IFVGs older than 400 bars (residual sliding for very-old setups is bounded). The sliding the user originally observed is eliminated for any setup younger than 400 bars — which is the typical case after FIFO cleanup.
 
 Pine v6 syntax constraints respected: no blank lines inside loops/ifs, no trailing `=` at end of line, no split expressions without operator at line end.
 
