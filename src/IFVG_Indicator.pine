@@ -2146,7 +2146,7 @@ render_fvg_boxes() =>
                     border_style = get_border_style(i_fvg_border_style)
                     right_edge = bar_index + i_extend_bars
 
-                    int fvg_left_edge = math.max(fvg.start_bar, bar_index - 400)
+                    int fvg_left_edge = fvg.start_bar
                     fvg.box_id := box.new(
                         left = fvg_left_edge,
                         top = fvg.top,
@@ -2231,7 +2231,7 @@ render_ifvg_boxes() =>
 
                     // Box left edge anchors at the ORIGINAL FVG's first bar (not the inversion bar),
                     // so the box visually covers the imbalance zone from its formation onward.
-                    int ifvg_left_edge = math.max(ifvg.start_bar, bar_index - 400)
+                    int ifvg_left_edge = ifvg.start_bar
                     ifvg.box_id := box.new(
                         left = ifvg_left_edge,
                         top = ifvg.top,
@@ -2316,7 +2316,7 @@ render_ifvg_boxes() =>
                             entry_line_color = ifvg.is_bullish ? i_entry_color_bull : i_entry_color_bear
 
                             // Draw entry line
-                            int entry_left_edge = math.max(ifvg.inversion_bar, bar_index - 400)
+                            int entry_left_edge = ifvg.inversion_bar
                             ifvg.entry_line_id := line.new(
                                 x1 = entry_left_edge,
                                 y1 = entry_level,
@@ -2390,7 +2390,7 @@ render_htf_fvg_boxes(array<FVG> arr, string tf_label) =>
                         // Active HTF FVG projects forward to current bar (live zone).
                         right_edge = bar_index + i_extend_bars
                         // Left anchored at the HTF FVG's first bar — stays put as price moves on.
-                        int left_edge = math.max(fvg.start_bar, bar_index - 400)
+                        int left_edge = fvg.start_bar
 
                         fvg.box_id := box.new(
                             left = left_edge,
@@ -2444,7 +2444,7 @@ render_htf_ifvg_boxes(array<IFVG> arr, string tf_label) =>
                         // Right edge projects forward — HTF IFVG is a live zone until mitigated.
                         right_edge = bar_index + i_extend_bars
                         // Left anchored at the source HTF FVG's first bar (not the inversion bar).
-                        int left_edge = math.max(ifvg.start_bar, bar_index - 400)
+                        int left_edge = ifvg.start_bar
 
                         ifvg.box_id := box.new(
                             left = left_edge,
