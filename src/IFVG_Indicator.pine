@@ -545,22 +545,38 @@ merge_with_existing_fvg(FVG new_fvg) =>
             if existing.is_bullish == new_fvg.is_bullish and existing.status == "active"
                 int bar_distance = int(math.abs(new_fvg.end_bar - existing.end_bar))
                 if bar_distance <= 5
-                    // Merge: extend existing FVG to encompass new one
-                    float combined_top = math.max(existing.top, new_fvg.top)
-                    float combined_bottom = math.min(existing.bottom, new_fvg.bottom)
-                    existing.top := combined_top
-                    existing.bottom := combined_bottom
-                    existing.mid := (combined_top + combined_bottom) / 2
-                    existing.end_bar := int(math.max(existing.end_bar, new_fvg.end_bar))
-                    // Redraw the box to reflect combined zone
-                    if not na(existing.box_id)
-                        box.delete(existing.box_id)
-                        existing.box_id := na
-                    if not na(existing.label_id)
-                        label.delete(existing.label_id)
-                        existing.label_id := na
-                    merged := true
-                    break
+                    // Opposite-color scan: block merge when any opposite-color
+                    // candle exists strictly between the two FVGs' 3-candle windows.
+                    // Dojis (close == open) are neutral and never block.
+                    bool opposite_found = false
+                    int scan_from = existing.end_bar + 1
+                    int scan_to = new_fvg.start_bar - 1
+                    if scan_to >= scan_from
+                        for k = scan_from to scan_to
+                            int offset = bar_index - k
+                            if new_fvg.is_bullish
+                                if close[offset] < open[offset]
+                                    opposite_found := true
+                            if not new_fvg.is_bullish
+                                if close[offset] > open[offset]
+                                    opposite_found := true
+                    if not opposite_found
+                        // Merge: extend existing FVG to encompass new one
+                        float combined_top = math.max(existing.top, new_fvg.top)
+                        float combined_bottom = math.min(existing.bottom, new_fvg.bottom)
+                        existing.top := combined_top
+                        existing.bottom := combined_bottom
+                        existing.mid := (combined_top + combined_bottom) / 2
+                        existing.end_bar := int(math.max(existing.end_bar, new_fvg.end_bar))
+                        // Redraw the box to reflect combined zone
+                        if not na(existing.box_id)
+                            box.delete(existing.box_id)
+                            existing.box_id := na
+                        if not na(existing.label_id)
+                            label.delete(existing.label_id)
+                            existing.label_id := na
+                        merged := true
+                        break
     merged
 
 // ─────────────────────────────────────────────────────────────────────
