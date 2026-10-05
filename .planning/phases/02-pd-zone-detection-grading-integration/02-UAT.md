@@ -6,26 +6,23 @@ source:
   - 02-02-SUMMARY.md
   - 02-03-SUMMARY.md
 started: 2026-04-14T00:00:00Z
-updated: 2026-04-14T00:00:00Z
+updated: 2026-05-12T00:00:00Z
 ---
 
 ## Current Test
 
-number: 1
-name: Pine Editor Compile Gate
+number: 2
+name: PD Dealing Range Lines + Labels
 expected: |
-  Paste src/IFVG_Indicator.pine into the TradingView Pine Editor (must fully remove and re-add the indicator on the chart to pick up new input defaults). It compiles with zero errors and loads onto the chart.
+  On a chart where chart TF < PD TF (e.g., NQ1! 15m with PD=D), three dashed lines appear spanning the current dealing range — swing-high at the top, EQ in the middle, swing-low at the bottom. Right-edge labels read "1 (price)", "0.5 (price)", "0 (price)" with the live price values.
 awaiting: user response
 
 ## Tests
 
 ### 1. Pine Editor Compile Gate
 expected: Paste src/IFVG_Indicator.pine into the TradingView Pine Editor. It compiles with zero errors and loads onto the chart. (Remove/re-add the indicator to pick up new input defaults.)
-result: issue
-reported: "Error on bar 0: bad session entry - 60 at #main():2764"
-severity: blocker
-root_cause: "time() args reversed: `time(\"\", i_pd_timeframe)` treats empty string as timeframe and i_pd_timeframe (e.g. '60') as session string. Correct signature is time(timeframe, [session]) so it should be `time(i_pd_timeframe)` (single arg)."
-fix: "Replace `time(\"\", i_pd_timeframe)` with `time(i_pd_timeframe)` at src/IFVG_Indicator.pine:2762 and :2764."
+result: pass
+prior_blocker_resolved: "time() arg order fix committed in eba224d; PD selection/rendering fix in 0cd3767 — re-verified"
 
 ### 2. PD Dealing Range Lines + Labels
 expected: On a chart where chart TF < PD TF (e.g., NQ1! 15m with PD=D), three dashed lines appear spanning the current dealing range — swing-high at the top, EQ in the middle, swing-low at the bottom. Right-edge labels read "1 (price)", "0.5 (price)", "0 (price)" with the live price values.
@@ -63,9 +60,9 @@ result: [pending]
 ## Summary
 
 total: 9
-passed: 0
+passed: 1
 issues: 0
-pending: 9
+pending: 8
 skipped: 0
 
 ## Gaps

@@ -34,3 +34,9 @@ claudedocs/
 CLAUDE.md
 .claude/
 
+
+# Browser automation artifacts
+.playwright-mcp/
+tv-*.png
+tradingview-current.png
+diag.py
