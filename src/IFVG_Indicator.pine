@@ -77,6 +77,7 @@ type Liquidity
     bool is_valid       // Still valid for new touches (not broken through)
     line line_id        // Reference to drawn line
     label label_id      // Reference to label
+    int mitigated_bar   // Bar index where level was swept or broken (na while live)
 
 // Type: Inverted Fair Value Gap (Extended for Phase 2)
 type IFVG
@@ -208,8 +209,8 @@ i_swing_lookback    = input.int(5, "Swing Lookback", minval=3, maxval=10, group=
                       tooltip="Number of bars to look left/right for swing detection")
 i_show_ith_itl      = input.bool(true, "Show ITH/ITL", group=GROUP_LIQ,
                       tooltip="Display Internal Highs and Internal Lows")
-i_max_liquidity     = input.int(4, "Max Liquidity Levels", minval=2, maxval=100, group=GROUP_LIQ,
-                      tooltip="Maximum liquidity levels to track")
+i_show_mitigated_liq = input.bool(false, "Show Mitigated Liquidity", group=GROUP_LIQ,
+                       tooltip="Keep displaying ITH/ITL and EQH/EQL after they're mitigated (swept ✗ or broken through ⊘)")
 
 // ─────────────────────────────────────────────────────────────────────
 // EQH/EQL Detection Settings (Enhanced)
@@ -227,8 +228,6 @@ i_require_intact    = input.bool(true, "Require Intact Liquidity", group=GROUP_E
                       tooltip="Only form EQL/EQH if price hasn't broken through yet")
 i_show_perfect_only = input.bool(false, "Show Perfect EQL/EQH Only", group=GROUP_EQHL,
                       tooltip="Hide relative EQL/EQH, only show perfect matches")
-i_show_swept_eqhl   = input.bool(false, "Show Mitigated EQL/EQH", group=GROUP_EQHL,
-                      tooltip="Keep displaying EQL/EQH after they're mitigated (swept or broken through)")
 
 // ─────────────────────────────────────────────────────────────────────
 // Grading Settings (Phase 2)
@@ -308,6 +307,16 @@ var array<IFVG> g_htf2_ifvg_array = array.new<IFVG>()
 var array<SwingPoint> g_swing_highs = array.new<SwingPoint>()
 var array<SwingPoint> g_swing_lows = array.new<SwingPoint>()
 var array<Liquidity> g_liquidity_array = array.new<Liquidity>()
+// Last swing bar turned into an ITH [0] / ITL [1] — prevents re-creating a level
+// that was already swept/broken and forgotten
+var array<int> g_last_internal_bar = array.from(-1, -1)
+
+// Liquidity memory rules (automatic, not user settings)
+// Live levels are remembered until swept or broken, regardless of age.
+// Mitigated levels are kept LIQ_MITIGATED_KEEP_BARS for sweep crediting, then forgotten.
+int LIQ_MEMORY_MAX          = 100  // Hard cap on remembered levels
+int LIQ_MITIGATED_KEEP_BARS = 500  // Matches max_bars_back (sweep window limit)
+int LIQ_DRAW_PER_SIDE       = 3    // Live levels drawn above and below price
 
 // PD zone state (Phase 2)
 var array<SwingPoint> g_pd_swing_highs = array.new<SwingPoint>()
@@ -431,13 +440,43 @@ cleanup_ifvg_array() =>
         if not na(old_ifvg.formation_divider_id)
             line.delete(old_ifvg.formation_divider_id)
 
+// ─────────────────────────────────────────────────────────────────────
+// Delete a liquidity level's line and label
+// ─────────────────────────────────────────────────────────────────────
+delete_liquidity_drawings(Liquidity liq) =>
+    if not na(liq.line_id)
+        line.delete(liq.line_id)
+        liq.line_id := na
+    if not na(liq.label_id)
+        label.delete(liq.label_id)
+        liq.label_id := na
+
+// ─────────────────────────────────────────────────────────────────────
+// Liquidity memory cleanup (no user setting)
+// RULE 1: Live levels stay remembered until swept or broken, however old.
+// RULE 2: Mitigated levels are forgotten LIQ_MITIGATED_KEEP_BARS after mitigation.
+// RULE 3: Above LIQ_MEMORY_MAX, drop the oldest mitigated level first,
+//         and only drop the oldest live level when none are mitigated.
+// ─────────────────────────────────────────────────────────────────────
 cleanup_liquidity_array() =>
-    while array.size(g_liquidity_array) > i_max_liquidity
-        old_liq = array.shift(g_liquidity_array)
-        if not na(old_liq.line_id)
-            line.delete(old_liq.line_id)
-        if not na(old_liq.label_id)
-            label.delete(old_liq.label_id)
+    int n = array.size(g_liquidity_array)
+    if n > 0
+        for i = n - 1 to 0
+            Liquidity liq = array.get(g_liquidity_array, i)
+            bool mitigated = liq.is_swept or not liq.is_valid
+            if mitigated and not na(liq.mitigated_bar) and bar_index - liq.mitigated_bar > LIQ_MITIGATED_KEEP_BARS
+                delete_liquidity_drawings(liq)
+                array.remove(g_liquidity_array, i)
+    while array.size(g_liquidity_array) > LIQ_MEMORY_MAX
+        int drop_idx = 0
+        int sz = array.size(g_liquidity_array)
+        for i = 0 to sz - 1
+            Liquidity liq = array.get(g_liquidity_array, i)
+            if liq.is_swept or not liq.is_valid
+                drop_idx := i
+                break
+        Liquidity old_liq = array.remove(g_liquidity_array, drop_idx)
+        delete_liquidity_drawings(old_liq)
 
 // ─────────────────────────────────────────────────────────────────────
 // Check if a swing level is still intact (not broken through)
@@ -1168,7 +1207,9 @@ create_internal_levels() =>
                         ith_exists := true
                         break
 
-        if not ith_exists
+        // Never re-create a level from a swing already used (it may have been swept and forgotten)
+        if not ith_exists and recent_high.bar_idx > array.get(g_last_internal_bar, 0)
+            array.set(g_last_internal_bar, 0, recent_high.bar_idx)
             new_ith = Liquidity.new(
                 level = recent_high.price,
                 original_level = recent_high.price,
@@ -1201,7 +1242,9 @@ create_internal_levels() =>
                         itl_exists := true
                         break
 
-        if not itl_exists
+        // Never re-create a level from a swing already used (it may have been swept and forgotten)
+        if not itl_exists and recent_low.bar_idx > array.get(g_last_internal_bar, 1)
+            array.set(g_last_internal_bar, 1, recent_low.bar_idx)
             new_itl = Liquidity.new(
                 level = recent_low.price,
                 original_level = recent_low.price,
@@ -1228,7 +1271,6 @@ check_liquidity_sweeps() =>
         for i = 0 to liq_size - 1
             if i < liq_size
                 liq = array.get(g_liquidity_array, i)
-
                 if not liq.is_swept and liq.is_valid
                     // BSL Sweep: high wicks above, close stays below
                     if (liq.liq_type == "EQH" or liq.liq_type == "ITH")
@@ -1236,23 +1278,26 @@ check_liquidity_sweeps() =>
                             liq.is_swept := true
                             liq.swept_bar := bar_index
                             liq.is_valid := false  // No more touches count
-
+                            liq.mitigated_bar := bar_index
                     // SSL Sweep: low wicks below, close stays above
                     if (liq.liq_type == "EQL" or liq.liq_type == "ITL")
                         if low < liq.level and close > liq.level
                             liq.is_swept := true
                             liq.swept_bar := bar_index
                             liq.is_valid := false  // No more touches count
-
-                // EQH/EQL close-through invalidation (formation broken).
-                // ITH/ITL persist as dealing-range references — only sweep-and-revert marks them swept.
+                            liq.mitigated_bar := bar_index
+                // Close-through invalidation (level broken, NOT swept) for all types.
+                // A broken level can never be swept later — a wick back through it is not a sweep.
+                // NOTE: PD dealing range uses g_pd_liquidity_array, so this does not affect PD zones.
                 if liq.is_valid and not liq.is_swept
-                    if liq.liq_type == "EQH"
+                    if liq.liq_type == "EQH" or liq.liq_type == "ITH"
                         if close > liq.level
                             liq.is_valid := false
-                    if liq.liq_type == "EQL"
+                            liq.mitigated_bar := bar_index
+                    if liq.liq_type == "EQL" or liq.liq_type == "ITL"
                         if close < liq.level
                             liq.is_valid := false
+                            liq.mitigated_bar := bar_index
 
 // ─────────────────────────────────────────────────────────────────────
 // Create PD Internal Highs/Lows (PD_ITH/PD_ITL) — mirror of create_internal_levels()
@@ -2533,57 +2578,68 @@ get_tf_label(string tf) =>
     result
 
 // ─────────────────────────────────────────────────────────────────────
+// Count live (unswept, unbroken) liquidity levels for the dashboard
+// ─────────────────────────────────────────────────────────────────────
+count_live_liquidity() =>
+    int live = 0
+    int n = array.size(g_liquidity_array)
+    if n > 0
+        for i = 0 to n - 1
+            Liquidity liq = array.get(g_liquidity_array, i)
+            if liq.is_valid and not liq.is_swept
+                live += 1
+    live
+
+// ─────────────────────────────────────────────────────────────────────
+// Whether a liquidity level's TYPE is enabled for display
+// (visibility toggles only — data is always kept for grading)
+// ─────────────────────────────────────────────────────────────────────
+is_liq_displayable(Liquidity liq) =>
+    bool is_eq = liq.liq_type == "EQH" or liq.liq_type == "EQL"
+    bool is_internal = liq.liq_type == "ITH" or liq.liq_type == "ITL"
+    bool type_on = (is_eq and i_show_eqh_eql) or (is_internal and i_show_ith_itl)
+    bool quality_ok = not (is_eq and i_show_perfect_only and liq.quality == "relative")
+    type_on and quality_ok
+
+// ─────────────────────────────────────────────────────────────────────
 // Render Liquidity Lines (Phase 2 - Enhanced with quality indicators)
 // ─────────────────────────────────────────────────────────────────────
 render_liquidity_lines() =>
     int liq_size = array.size(g_liquidity_array)
     if liq_size > 0
+        // Pass 1: distance cut-offs so only the nearest LIQ_DRAW_PER_SIDE live levels
+        // above and below price are drawn (all live levels stay in memory)
+        array<float> above_dist = array.new<float>()
+        array<float> below_dist = array.new<float>()
+        for i = 0 to liq_size - 1
+            Liquidity lq = array.get(g_liquidity_array, i)
+            if is_liq_displayable(lq) and lq.is_valid and not lq.is_swept
+                if lq.level >= close
+                    array.push(above_dist, lq.level - close)
+                else
+                    array.push(below_dist, close - lq.level)
+        array.sort(above_dist, order.ascending)
+        array.sort(below_dist, order.ascending)
+        int n_above = array.size(above_dist)
+        int n_below = array.size(below_dist)
+        float above_cut = n_above > 0 ? array.get(above_dist, int(math.min(LIQ_DRAW_PER_SIDE, n_above)) - 1) : na
+        float below_cut = n_below > 0 ? array.get(below_dist, int(math.min(LIQ_DRAW_PER_SIDE, n_below)) - 1) : na
+        // Pass 2: draw
         for i = 0 to liq_size - 1
             if i < liq_size
                 liq = array.get(g_liquidity_array, i)
-
-                // Skip if feature is disabled (delete drawings first)
-                if (liq.liq_type == "EQH" or liq.liq_type == "EQL") and not i_show_eqh_eql
-                    if not na(liq.line_id)
-                        line.delete(liq.line_id)
-                        liq.line_id := na
-                    if not na(liq.label_id)
-                        label.delete(liq.label_id)
-                        liq.label_id := na
+                bool is_mitigated = liq.is_swept or not liq.is_valid
+                bool is_near = false
+                if not is_mitigated
+                    if liq.level >= close
+                        is_near := not na(above_cut) and liq.level - close <= above_cut
+                    else
+                        is_near := not na(below_cut) and close - liq.level <= below_cut
+                bool should_draw = is_liq_displayable(liq) and (is_mitigated ? i_show_mitigated_liq : is_near)
+                // Delete drawings and skip levels that are hidden, far from price, or mitigated (unless shown)
+                if not should_draw
+                    delete_liquidity_drawings(liq)
                     continue
-                if (liq.liq_type == "ITH" or liq.liq_type == "ITL") and not i_show_ith_itl
-                    if not na(liq.line_id)
-                        line.delete(liq.line_id)
-                        liq.line_id := na
-                    if not na(liq.label_id)
-                        label.delete(liq.label_id)
-                        liq.label_id := na
-                    continue
-
-                // Skip mitigated EQL/EQH (swept OR broken through) if user doesn't want to see them
-                // IMPORTANT: Delete drawings before skipping to remove them from chart
-                if (liq.is_swept or not liq.is_valid) and not i_show_swept_eqhl
-                    if liq.liq_type == "EQH" or liq.liq_type == "EQL"
-                        if not na(liq.line_id)
-                            line.delete(liq.line_id)
-                            liq.line_id := na
-                        if not na(liq.label_id)
-                            label.delete(liq.label_id)
-                            liq.label_id := na
-                        continue
-
-                // Skip relative EQL/EQH if user only wants to see perfect ones
-                // NOTE: Data is still collected for grading algorithms, only rendering is filtered
-                if i_show_perfect_only and liq.quality == "relative"
-                    if liq.liq_type == "EQH" or liq.liq_type == "EQL"
-                        if not na(liq.line_id)
-                            line.delete(liq.line_id)
-                            liq.line_id := na
-                        if not na(liq.label_id)
-                            label.delete(liq.label_id)
-                            liq.label_id := na
-                        continue
-
                 // Delete old drawings (for items that will be redrawn)
                 if not na(liq.line_id)
                     line.delete(liq.line_id)
@@ -2614,8 +2670,15 @@ render_liquidity_lines() =>
                         line_style := line.style_solid
 
                 else if liq.liq_type == "ITH" or liq.liq_type == "ITL"
-                    line_color := liq.is_swept ? color.new(i_ithl_color, 70) : i_ithl_color
-                    line_style := line.style_dashed
+                    if liq.is_swept
+                        line_color := color.new(i_ithl_color, 70)  // Faded if swept
+                        line_style := line.style_dotted
+                    else if not liq.is_valid
+                        line_color := color.new(color.gray, 70)  // Gray if broken through
+                        line_style := line.style_dotted
+                    else
+                        line_color := i_ithl_color
+                        line_style := line.style_dashed
 
                 right_edge = bar_index + i_extend_bars
 
@@ -2703,7 +2766,7 @@ render_dashboard(IFVG latest_ifvg) =>
 
         // Row 3: Liquidity Levels
         table.cell(dashboard, 0, 3, "Liquidity:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
-        table.cell(dashboard, 1, 3, str.tostring(array.size(g_liquidity_array)), text_color=color.white, text_size=size.small, text_halign=text.align_right)
+        table.cell(dashboard, 1, 3, str.tostring(count_live_liquidity()), text_color=color.white, text_size=size.small, text_halign=text.align_right)
 
         // Row 4: Divider
         table.cell(dashboard, 0, 4, "─────────", text_color=color.gray, text_size=size.small, text_halign=text.align_left)

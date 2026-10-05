@@ -6,19 +6,23 @@ Issues identified, root causes, and applied solutions for maintainability and fu
 
 ## Issue 1: ITH/ITL Mitigation Not Triggered on Body Close-Through
 
-**Status:** Regressed — fix reverted by `732356d`; ITH/ITL close-through invalidation later removed in `0cd3767` for PD zones
-**Commits:** `257efaf`
-**Affected Code:** `render_liquidity_lines()` (Section 10)
+**Status:** Resolved (2026-10-05, verified on TradingView)
+**Commits:** `257efaf` (rendering fix, reverted by `732356d`), "Phase 4: ITH/ITL close-through break and liquidity memory model"
+**Affected Code:** `check_liquidity_sweeps()` (Section 6), `render_liquidity_lines()` (Section 10)
 
-**Symptom:** ITH/ITL levels only marked as mitigated when a wick passed through. When a candle body closed directly through the level, it remained visually active.
+**Symptom:** ITH/ITL levels only became mitigated when a wick went through and the candle closed back. A candle body closing straight through left the level live, and a later wick back through it was wrongly counted as a sweep.
 
-**Root Cause:** The detection logic in `check_liquidity_sweeps()` was already correct -- it set `is_valid=false` for body close-through. The bug was entirely in rendering:
-1. ITH/ITL color logic only checked `is_swept`, ignoring `is_valid=false`. Broken levels rendered with active color.
-2. The skip/hide block for mitigated levels only covered EQH/EQL types, not ITH/ITL.
+**Root Cause:** Close-through invalidation existed only for EQH/EQL. It had been removed for ITH/ITL during the PD zone work (`0cd3767`) to keep them as dealing-range anchors. Rendering also ignored the broken state for ITH/ITL.
+
+**Decision (2026-10-05):** Swept and broken are different events and must stay different:
+- **Swept (✗):** wick through, body closes back inside → stop hunt; can credit a setup's sweep.
+- **Broken (⊘):** body closes through → level is gone; it can never be "swept" later.
+
+The PD dealing range now uses its own `g_pd_liquidity_array` (`select_dealing_range_source()`), so breaking chart ITH/ITL no longer affects PD zones.
 
 **Solution:**
-- Expanded ITH/ITL rendering to check three states: swept (yellow faded, dotted), broken/invalid (gray, dotted), and active (yellow, dashed) -- matching EQH/EQL behavior.
-- Added skip/hide logic for mitigated ITH/ITL with a separate `i_show_swept_ithl` input toggle (default: true), independent from the EQH/EQL setting. This avoids confusion since ITH/ITL and EQH/EQL are related but not identical concepts.
+- `check_liquidity_sweeps()`: close-through invalidation applies to ITH/ITL as well as EQH/EQL.
+- Rendering: ITH/ITL have three states: live (yellow dashed), swept (faded dotted ✗), broken (grey dotted ⊘).
 
 ---
 
@@ -158,3 +162,26 @@ Two FVGs at completely different price levels got merged just because they were 
 - Added `clamp_left_bar(x)` which keeps the true anchor unless it is more than 4999 bars back.
 - Applied to FVG/IFVG boxes (LTF and HTF), SL/BE/entry lines, liquidity lines, and PD/OTE lines.
 - The vertical formation divider is skipped (not clamped) when older than 5000 bars, so it never tilts.
+
+---
+
+## Issue 10: Liquidity Memory Forgot Levels After 4 New Ones
+
+**Status:** Resolved (2026-10-05, verified on TradingView)
+**Commits:** "Phase 4: ITH/ITL close-through break and liquidity memory model"
+**Affected Code:** `cleanup_liquidity_array()` (Section 4), `create_internal_levels()` (Section 6), `render_liquidity_lines()` and dashboard (Sections 10-11)
+
+**Symptom:** A sweep inside a setup was not credited, and old major highs/lows were never recognised when price returned to them.
+
+**Root Cause:** One setting, "Max Liquidity Levels" (default 4), controlled both what was drawn and what was remembered. Every new level pushed the oldest out (FIFO), so the oldest and most important levels were forgotten first.
+
+**Decision (2026-10-05):** Separate memory from drawing, with no user setting:
+- **Memory:** live levels are kept until swept or broken, however old (hard cap 100). Mitigated levels are kept 500 bars after mitigation (needed to credit sweeps within `max_bars_back`), then forgotten. Above the cap, the oldest mitigated level is dropped before any live one.
+- **Drawing:** only the 3 nearest live levels above and below price; mitigated levels only with "Show Mitigated Liquidity".
+- A swing already turned into an ITH/ITL is never turned into a level again (`g_last_internal_bar`), so a forgotten swept level can't come back as a fresh one.
+
+**Solution:**
+- Removed the "Max Liquidity Levels" input; added constants `LIQ_MEMORY_MAX`, `LIQ_MITIGATED_KEEP_BARS`, `LIQ_DRAW_PER_SIDE`.
+- New `mitigated_bar` field on `Liquidity`.
+- "Show Mitigated EQL/EQH" replaced by "Show Mitigated Liquidity" (covers all types, default off).
+- Dashboard "Liquidity:" counts live levels only.
