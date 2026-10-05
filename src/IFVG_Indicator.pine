@@ -1465,22 +1465,33 @@ find_dol(bool is_bullish_ifvg, float current_price) =>
     result
 
 // ─────────────────────────────────────────────────────────────────────
-// Check if there was a recent liquidity sweep
+// Check if a liquidity sweep CAUSED this setup's reversal (no bar-count setting)
+// RULE 1: Sweep must occur inside the setup's own move — from FVG formation
+//         (window_start) up to and including the inversion candle (current bar).
+// RULE 2: The sweep candle's wick must be the extreme of that move — lowest low
+//         for SSL sweeps (bullish IFVG), highest high for BSL sweeps (bearish IFVG).
+// NOTE: Window is capped at 499 bars by max_bars_back=500.
 // ─────────────────────────────────────────────────────────────────────
-check_recent_sweep(bool looking_for_bsl, int lookback_bars) =>
+check_setup_sweep(bool looking_for_bsl, int window_start) =>
     bool result = false
-    int arr_size = array.size(g_liquidity_array)
-
-    if arr_size > 0
-        for i = 0 to arr_size - 1
-            if i < arr_size
+    int span = int(math.min(bar_index - window_start, 499))
+    if span >= 0
+        // Extreme of the move across the window
+        float move_extreme = looking_for_bsl ? high : low
+        for k = 0 to span
+            if looking_for_bsl
+                move_extreme := math.max(move_extreme, high[k])
+            else
+                move_extreme := math.min(move_extreme, low[k])
+        int arr_size = array.size(g_liquidity_array)
+        if arr_size > 0
+            for i = 0 to arr_size - 1
                 liq = array.get(g_liquidity_array, i)
-
-                if liq.is_swept and bar_index - liq.swept_bar <= lookback_bars
-                    if looking_for_bsl and (liq.liq_type == "EQH" or liq.liq_type == "ITH")
-                        result := true
-                        break
-                    if not looking_for_bsl and (liq.liq_type == "EQL" or liq.liq_type == "ITL")
+                bool side_match = looking_for_bsl ? (liq.liq_type == "EQH" or liq.liq_type == "ITH") : (liq.liq_type == "EQL" or liq.liq_type == "ITL")
+                int sweep_offset = bar_index - liq.swept_bar
+                if liq.is_swept and side_match and sweep_offset >= 0 and sweep_offset <= span
+                    float sweep_wick = looking_for_bsl ? high[sweep_offset] : low[sweep_offset]
+                    if sweep_wick == move_extreme
                         result := true
                         break
 
@@ -1844,8 +1855,8 @@ check_inversions() =>
                             // Find DOL (target)
                             Liquidity dol = find_dol(ifvg_is_bullish, close)
 
-                            // Check for recent sweep
-                            bool has_sweep = check_recent_sweep(not ifvg_is_bullish, 20)
+                            // Check for a sweep inside this setup's move (FVG formation → inversion)
+                            bool has_sweep = check_setup_sweep(not ifvg_is_bullish, fvg.start_bar)
 
                             // Check delivery from prior FVG (per D-01)
                             bool has_delivery = check_delivery_from_fvg(ifvg_is_bullish, 20)

@@ -64,17 +64,21 @@ A candle at exactly the SL level would pass creation but could trigger invalidat
 
 ## Issue 4: Sweep Lookback Hardcoded at 20 Bars
 
-**Status:** Regressed — fix reverted by `732356d`
-**Commits:** `404f307`
-**Affected Code:** `check_inversions()` call to `check_recent_sweep()`
+**Status:** Resolved (2026-10-05, verified on TradingView) — replaced by a structural rule, no setting
+**Commits:** `404f307` (input-based fix, reverted by `732356d` and superseded), "Phase 4: structural sweep window"
+**Affected Code:** `check_setup_sweep()` (Section 7), called from `check_inversions()`
 
-**Symptom:** The sweep detection lookback was hardcoded to 20 bars, which doesn't scale with timeframe. On M1 that's 20 minutes; on H4 it's 80 hours.
+**Symptom:** The sweep window was a fixed 20 bars from the inversion candle. 20 bars = 20 minutes on M1 but 80 hours on H4, and any sweep of any level inside the window counted, even when unrelated to the setup.
 
-**Root Cause:** The `check_recent_sweep()` function already accepted a `lookback_bars` parameter, but the call site passed a hardcoded `20`.
+**Root Cause:** A bar count has no meaning of its own; it neither scales with timeframe nor tests whether the sweep caused the reversal.
 
-**Solution:**
-- Added `i_sweep_lookback` input (default 20, range 5-100) in the Grading Settings group.
-- Call site now uses `i_sweep_lookback` instead of `20`, allowing users to adjust per timeframe.
+**Decision (2026-10-05):** No lookback settings for end users — bar-count windows are confusing for non-technical traders and inconsistent across timeframes. Options considered: fixed clock time (A), timeframe table (B), structural window (C), C + safety cap (D). **Chose C, strict.**
+
+**Solution:** A sweep counts toward a setup only if:
+1. it happened between the source FVG's first candle (`fvg.start_bar`) and the inversion candle, inclusive (strict: sweeps before the gap formed do not count); and
+2. the sweep candle's wick is the extreme of that move (lowest low for bullish IFVGs, highest high for bearish).
+
+The window is therefore set by the setup itself (3 candles on a fast M1 setup, 40 on a slow H4 one). Technical cap: 499 bars (`max_bars_back = 500`). If good setups lose sweep credit in practice, the window can be loosened to start at the swing that began the move.
 
 ---
 
