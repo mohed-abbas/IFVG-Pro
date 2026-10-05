@@ -185,3 +185,19 @@ Two FVGs at completely different price levels got merged just because they were 
 - New `mitigated_bar` field on `Liquidity`.
 - "Show Mitigated EQL/EQH" replaced by "Show Mitigated Liquidity" (covers all types, default off).
 - Dashboard "Liquidity:" counts live levels only.
+
+---
+
+## Issue 11: Multi-Candle Raids Not Credited as Sweeps
+
+**Status:** Open — deferred (test first, then decide); revisit after the swing rework and before the grading remodel (#8)
+**Affected Code:** `check_setup_sweep()` (Section 7)
+**Details:** `.planning/todos/pending/multi-candle-sweep-rule.md`
+
+**Symptom:** A textbook sweep on an "A- SELL" setup (2026-10-05) showed "Delivery only".
+
+**Suspected Cause:** Rule 2 requires the first candle that swept the level to be the extreme of the move. In a multi-candle raid, an earlier candle sweeps the level and a later one makes the top, so the sweep is rejected.
+
+**Proposed Fix (not applied):** count the sweep if the level was swept inside the window, the move's extreme is at or after the sweep, and no candle closed beyond the level between the sweep and the inversion.
+
+**Why deferred:** the current rule fails safe (under-credits, never invents sweeps); the swing rework changes the ITH/ITL set; more examples are needed before changing a grading input.
