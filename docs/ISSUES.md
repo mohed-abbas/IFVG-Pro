@@ -138,3 +138,19 @@ Two FVGs at completely different price levels got merged just because they were 
 **Affected Code:** `calculate_grade()`, grading inputs (Section 7-8)
 
 **Description:** The current grading system has several misunderstandings and needs a complete remodel. To be tackled after all other issues are resolved, with discussion to align on the desired grading logic.
+
+---
+
+## Issue 9: "Bar index too far" Runtime Error on Old Drawings
+
+**Status:** Resolved (2026-10-05, verified on TradingView)
+**Affected Code:** New `clamp_left_bar()` (Section 4); all left-edge anchors in Section 10 rendering
+
+**Symptom:** `Error on bar 6670: Bar index value of the left argument (1669) in box.new() is too far from the current bar index` at `render_htf_ifvg_boxes()`.
+
+**Root Cause:** `c976911` removed the 400-bar clamp so boxes anchor at their formation bar. TradingView rejects bar_index x-coordinates more than 5000 bars from the current bar, so any zone still live 5000+ bars after forming (most often HTF IFVGs) crashed the script.
+
+**Solution:**
+- Added `clamp_left_bar(x)` which keeps the true anchor unless it is more than 4999 bars back.
+- Applied to FVG/IFVG boxes (LTF and HTF), SL/BE/entry lines, liquidity lines, and PD/OTE lines.
+- The vertical formation divider is skipped (not clamped) when older than 5000 bars, so it never tilts.

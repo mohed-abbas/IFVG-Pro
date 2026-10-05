@@ -324,6 +324,14 @@ atr_value = ta.atr(i_fvg_atr_period)
 // ══════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────
+// Clamp a drawing's left x-coordinate to TradingView's 5000-bar limit
+// Keeps the true formation anchor unless it is more than 4999 bars back
+// (otherwise box.new/line.new throw "bar index too far" errors)
+// ─────────────────────────────────────────────────────────────────────
+clamp_left_bar(int x) =>
+    int(math.max(x, bar_index - 4999))
+
+// ─────────────────────────────────────────────────────────────────────
 // Get label size from string
 // ─────────────────────────────────────────────────────────────────────
 get_label_size() =>
@@ -2042,7 +2050,7 @@ clear_range_drawings(DealingRange r) =>
 render_dealing_range(DealingRange r) =>
     if not na(r) and r.is_valid and i_show_pd_lines
         int right_edge = math.min(bar_index + i_extend_bars, bar_index + 400)
-        int left_edge = math.max(r.high_bar_idx, r.low_bar_idx)
+        int left_edge = clamp_left_bar(int(math.max(r.high_bar_idx, r.low_bar_idx)))
         float hi = r.high_price
         float lo = r.low_price
         float eq = (hi + lo) / 2.0
@@ -2142,7 +2150,7 @@ render_fvg_boxes() =>
                     border_style = get_border_style(i_fvg_border_style)
                     right_edge = bar_index + i_extend_bars
 
-                    int fvg_left_edge = fvg.start_bar
+                    int fvg_left_edge = clamp_left_bar(fvg.start_bar)
                     fvg.box_id := box.new(
                         left = fvg_left_edge,
                         top = fvg.top,
@@ -2230,7 +2238,7 @@ render_ifvg_boxes() =>
 
                     // Box left edge anchors at the ORIGINAL FVG's first bar (not the inversion bar),
                     // so the box visually covers the imbalance zone from its formation onward.
-                    int ifvg_left_edge = ifvg.start_bar
+                    int ifvg_left_edge = clamp_left_bar(ifvg.start_bar)
                     ifvg.box_id := box.new(
                         left = ifvg_left_edge,
                         top = ifvg.top,
@@ -2315,7 +2323,7 @@ render_ifvg_boxes() =>
                             entry_line_color = ifvg.is_bullish ? i_entry_color_bull : i_entry_color_bear
 
                             // Draw entry line
-                            int entry_left_edge = ifvg.inversion_bar
+                            int entry_left_edge = clamp_left_bar(ifvg.inversion_bar)
                             ifvg.entry_line_id := line.new(
                                 x1 = entry_left_edge,
                                 y1 = entry_level,
@@ -2369,7 +2377,7 @@ render_ifvg_boxes() =>
                     // Visually separates the original FVG formation (left of line)
                     // from the post-inversion live zone projection (right of line).
                     // ═══════════════════════════════════════════════════════════
-                    if i_show_formation_divider and not na(ifvg.inversion_bar)
+                    if i_show_formation_divider and not na(ifvg.inversion_bar) and (bar_index - ifvg.inversion_bar < 5000)
                         ifvg.formation_divider_id := line.new(
                             x1 = ifvg.inversion_bar,
                             y1 = ifvg.top,
@@ -2406,7 +2414,7 @@ render_htf_fvg_boxes(array<FVG> arr, string tf_label) =>
                         // Active HTF FVG projects forward to current bar (live zone).
                         right_edge = bar_index + i_extend_bars
                         // Left anchored at the HTF FVG's first bar — stays put as price moves on.
-                        int left_edge = fvg.start_bar
+                        int left_edge = clamp_left_bar(fvg.start_bar)
 
                         fvg.box_id := box.new(
                             left = left_edge,
@@ -2460,7 +2468,7 @@ render_htf_ifvg_boxes(array<IFVG> arr, string tf_label) =>
                         // Right edge projects forward — HTF IFVG is a live zone until mitigated.
                         right_edge = bar_index + i_extend_bars
                         // Left anchored at the source HTF FVG's first bar (not the inversion bar).
-                        int left_edge = ifvg.start_bar
+                        int left_edge = clamp_left_bar(ifvg.start_bar)
 
                         ifvg.box_id := box.new(
                             left = left_edge,
@@ -2602,7 +2610,7 @@ render_liquidity_lines() =>
 
                 // Draw line
                 liq.line_id := line.new(
-                    x1 = liq.bar_idx,
+                    x1 = clamp_left_bar(liq.bar_idx),
                     y1 = liq.level,
                     x2 = right_edge,
                     y2 = liq.level,
