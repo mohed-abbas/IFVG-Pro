@@ -1530,22 +1530,6 @@ assess_momentum(float inv_open, float inv_high, float inv_low, float inv_close) 
     result
 
 // ─────────────────────────────────────────────────────────────────────
-// Calculate stop loss level
-// ─────────────────────────────────────────────────────────────────────
-calculate_stop_loss(bool is_bullish, float ifvg_bottom, float ifvg_top, float inv_close) =>
-    float result = na
-
-    // Default: Fail Stop - below/above the inversion candle body close
-    if is_bullish
-        // For bullish IFVG, stop below the zone
-        result := ifvg_bottom
-    else
-        // For bearish IFVG, stop above the zone
-        result := ifvg_top
-
-    result
-
-// ─────────────────────────────────────────────────────────────────────
 // Check if an FVG is singular (no same-direction FVG nearby AND overlapping)
 // Per strategy: singular FVGs are higher quality than clustered ones
 // Both checks must fail for the FVG to be non-singular (per D-01)
@@ -1936,12 +1920,12 @@ update_be_status() =>
                     // Check if SL has been hit (invalidates entry)
                     if ifvg.entry_valid
                         if ifvg.is_bullish
-                            // Bullish: Invalid if price went BELOW SL level
-                            if low < ifvg.sl_level
+                            // Bullish: Invalid if price touched or went BELOW SL level (matches creation check)
+                            if low <= ifvg.sl_level
                                 ifvg.entry_valid := false
                         else
-                            // Bearish: Invalid if price went ABOVE SL level
-                            if high > ifvg.sl_level
+                            // Bearish: Invalid if price touched or went ABOVE SL level (matches creation check)
+                            if high >= ifvg.sl_level
                                 ifvg.entry_valid := false
 
 // ─────────────────────────────────────────────────────────────────────

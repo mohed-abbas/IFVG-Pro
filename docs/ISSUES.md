@@ -45,8 +45,8 @@ Issues identified, root causes, and applied solutions for maintainability and fu
 
 ## Issue 3: SL Check Asymmetry Between Creation and Tracking
 
-**Status:** Regressed — fix reverted by `732356d`
-**Commits:** `404f307`
+**Status:** Resolved (re-applied 2026-10-05, verified on TradingView)
+**Commits:** `404f307` (reverted by `732356d`), re-applied in "Fix SL check asymmetry and remove dead calculate_stop_loss()"
 **Affected Code:** `check_inversions()` (Section 8), BE/SL tracking loop (Section 9)
 
 **Symptom:** A candle opening exactly at the SL level passed the creation check but got caught during the next bar's tracking update.
@@ -99,8 +99,8 @@ A candle at exactly the SL level would pass creation but could trigger invalidat
 
 ## Issue 6: `calculate_stop_loss()` Was Dead Code
 
-**Status:** Regressed — fix reverted by `732356d`
-**Commits:** `404f307`
+**Status:** Resolved (re-applied 2026-10-05, verified on TradingView)
+**Commits:** `404f307` (reverted by `732356d`), re-applied in "Fix SL check asymmetry and remove dead calculate_stop_loss()"
 **Affected Code:** Removed function (was ~lines 1289-1300)
 
 **Symptom:** The standalone `calculate_stop_loss()` function was never called anywhere in the codebase.
