@@ -76,10 +76,11 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 | Pine Script v6 over v5 | Dynamic requests, no scope limit, negative array indexing | ✓ Good |
 | ATR-based sizing over fixed pip values | Market-agnostic across indices/forex/crypto | ✓ Good |
 | Single-file architecture | Pine Script limitation, no module system | ⚠️ Revisit — 2,500+ lines, consider section discipline |
-| No user lookback settings; windows derived from structure or timeframe (2026-10-05) | Non-technical traders; bar counts are confusing and inconsistent across timeframes | — Pending (sweep done; swing/PD lookbacks next) |
+| No user lookback settings; windows derived from structure or timeframe (2026-10-05) | Non-technical traders; bar counts are confusing and inconsistent across timeframes | — Pending (sweep and chart swings done; PD lookback next) |
 | Sweep counts only inside the setup's move (FVG → inversion) and must be the move's extreme | Credits only sweeps that caused the reversal; timeframe-independent | ✓ Good |
 | Swept (wick + close back) and broken (body close through) are distinct; broken levels can't be swept | ICT definition; stops false sweeps of already-broken levels | ✓ Good |
 | Liquidity memory separate from drawing (live levels kept until mitigated) | Old major levels were forgotten after 4 new ones | ✓ Good |
+| Swings = ICT 3-candle candidate confirmed by a 1-ATR close away (no lookback input) | Adapts to volatility, fast confirmation, keeps double tops | ✓ Good |
 | barstate.isconfirmed only | Prevents repainting — critical for trading decisions | ✓ Good |
 | HTF swing-based PD zones over daily range | More accurate ICT dealing range concept | — Pending |
 | Hybrid grading (tier + quality score) | Separates mandatory criteria from quality modifiers | ✓ Good |

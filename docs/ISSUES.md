@@ -201,3 +201,27 @@ Two FVGs at completely different price levels got merged just because they were 
 **Proposed Fix (not applied):** count the sweep if the level was swept inside the window, the move's extreme is at or after the sweep, and no candle closed beyond the level between the sweep and the inversion.
 
 **Why deferred:** the current rule fails safe (under-credits, never invents sweeps); the swing rework changes the ITH/ITL set; more examples are needed before changing a grading input.
+
+---
+
+## Issue 12: Swing Detection Used a Fixed 5-Bar Lookback Setting
+
+**Status:** Resolved (2026-10-05, verified on TradingView)
+**Commits:** "Phase 4: automatic swing detection (no lookback setting)"
+**Affected Code:** `detect_swing_points()`, `create_internal_levels()` (Section 6), `cleanup_liquidity_array()` (Section 4)
+**Spec:** `.planning/notes/auto-swing-detection.md`
+
+**Symptom:** Swings confirmed slowly (5 bars = 20 h on H4), chop produced swings, and exact double tops produced no swing at all (each high was "not higher" than the other), so obvious highs had no ITH.
+
+**Root Cause:** One number (`i_swing_lookback`) controlled both significance and confirmation delay, and ignored volatility.
+
+**Decision (2026-10-05):** No lookback settings for end users. A timeframe table was rejected: bar counts are already timeframe-invariant; what differs between charts is noise and volatility. Chose Option D (ICT 3-candle candidate + ATR displacement confirmation). On equal highs/lows the first candle is the swing; the second is paired by the EQH/EQL logic.
+
+**Solution:**
+- Candidate: `high[1] > high[2]` and `high[1] >= high[0]` (lows mirrored).
+- Confirmed when a candle closes ≥ 1 ATR (`SWING_CONFIRM_ATR`) away; cancelled if price trades beyond it first.
+- `create_internal_levels()` creates an ITH/ITL for every newly confirmed swing (several can confirm on one candle).
+- "Swing Lookback" input removed. The PD swing lookback is a separate later step.
+- Liquidity memory limit raised to 200 (`LIQ_MEMORY_MAX`). When full and no mitigated level is left to drop, the live level farthest from price is dropped (not the oldest), so major levels within reach are kept. Verified: memory fills with mitigated levels, live levels untouched.
+
+**Note — settings shift after removing an input:** TradingView stores input values by position. Removing an input shifts saved values onto the wrong settings (observed: "Show ITH/ITL" turned off, hiding all ITH/ITL). After any update that removes a setting: open settings → Defaults → Reset settings (then re-save your own defaults).

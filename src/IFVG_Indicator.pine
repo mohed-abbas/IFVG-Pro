@@ -205,8 +205,6 @@ i_pd_sweep_min_atr_mult       = input.float(0.05, "PD Sweep Min Wick (ATR mult)"
 // Liquidity Detection Settings (Phase 2)
 // ─────────────────────────────────────────────────────────────────────
 string GROUP_LIQ = "═══ Liquidity Detection ═══"
-i_swing_lookback    = input.int(5, "Swing Lookback", minval=3, maxval=10, group=GROUP_LIQ,
-                      tooltip="Number of bars to look left/right for swing detection")
 i_show_ith_itl      = input.bool(true, "Show ITH/ITL", group=GROUP_LIQ,
                       tooltip="Display Internal Highs and Internal Lows")
 i_show_mitigated_liq = input.bool(false, "Show Mitigated Liquidity", group=GROUP_LIQ,
@@ -306,6 +304,14 @@ var array<IFVG> g_htf2_ifvg_array = array.new<IFVG>()
 // Liquidity Arrays (Phase 2)
 var array<SwingPoint> g_swing_highs = array.new<SwingPoint>()
 var array<SwingPoint> g_swing_lows = array.new<SwingPoint>()
+// Swing candidates awaiting displacement confirmation (automatic swing detection)
+var array<SwingPoint> g_pending_highs = array.new<SwingPoint>()
+var array<SwingPoint> g_pending_lows = array.new<SwingPoint>()
+
+// Swing detection rules (automatic, not user settings)
+float SWING_CONFIRM_ATR = 1.0  // Close this many ATRs away from a candidate confirms it
+int SWING_PENDING_MAX   = 20   // Max unconfirmed candidates kept per side
+int SWING_MEMORY_MAX    = 50   // Max confirmed swings kept per side
 var array<Liquidity> g_liquidity_array = array.new<Liquidity>()
 // Last swing bar turned into an ITH [0] / ITL [1] — prevents re-creating a level
 // that was already swept/broken and forgotten
@@ -314,7 +320,7 @@ var array<int> g_last_internal_bar = array.from(-1, -1)
 // Liquidity memory rules (automatic, not user settings)
 // Live levels are remembered until swept or broken, regardless of age.
 // Mitigated levels are kept LIQ_MITIGATED_KEEP_BARS for sweep crediting, then forgotten.
-int LIQ_MEMORY_MAX          = 100  // Hard cap on remembered levels
+int LIQ_MEMORY_MAX          = 200  // Hard cap on remembered levels
 int LIQ_MITIGATED_KEEP_BARS = 500  // Matches max_bars_back (sweep window limit)
 int LIQ_DRAW_PER_SIDE       = 3    // Live levels drawn above and below price
 
@@ -455,8 +461,9 @@ delete_liquidity_drawings(Liquidity liq) =>
 // Liquidity memory cleanup (no user setting)
 // RULE 1: Live levels stay remembered until swept or broken, however old.
 // RULE 2: Mitigated levels are forgotten LIQ_MITIGATED_KEEP_BARS after mitigation.
-// RULE 3: Above LIQ_MEMORY_MAX, drop the oldest mitigated level first,
-//         and only drop the oldest live level when none are mitigated.
+// RULE 3: Above LIQ_MEMORY_MAX, drop the oldest mitigated level first; when none
+//         are mitigated, drop the live level FARTHEST from price (least likely
+//         to be swept or targeted soon), so major levels within reach stay remembered.
 // ─────────────────────────────────────────────────────────────────────
 cleanup_liquidity_array() =>
     int n = array.size(g_liquidity_array)
@@ -468,13 +475,21 @@ cleanup_liquidity_array() =>
                 delete_liquidity_drawings(liq)
                 array.remove(g_liquidity_array, i)
     while array.size(g_liquidity_array) > LIQ_MEMORY_MAX
-        int drop_idx = 0
+        int drop_idx = -1
+        int far_idx = 0
+        float far_dist = -1.0
         int sz = array.size(g_liquidity_array)
         for i = 0 to sz - 1
             Liquidity liq = array.get(g_liquidity_array, i)
             if liq.is_swept or not liq.is_valid
                 drop_idx := i
                 break
+            float dist = math.abs(liq.level - close)
+            if dist > far_dist
+                far_dist := dist
+                far_idx := i
+        if drop_idx < 0
+            drop_idx := far_idx
         Liquidity old_liq = array.remove(g_liquidity_array, drop_idx)
         delete_liquidity_drawings(old_liq)
 
@@ -938,61 +953,58 @@ check_htf_mitigations(array<IFVG> ifvg_arr, float htf_c) =>
 // ══════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────
-// Detect swing highs and lows
+// Detect swing highs and lows (automatic — no lookback setting)
+// RULE 1: Candidate = ICT 3-candle swing at [1]. On equal highs/lows the FIRST
+//         candle is the candidate (high[1] > high[2] and high[1] >= high[0]).
+// RULE 2: Confirm when a candle CLOSES at least SWING_CONFIRM_ATR x ATR away
+//         from the candidate (price clearly left the level).
+// RULE 3: Cancel when price trades beyond the candidate before confirmation
+//         (a higher high / lower low takes over as the extreme).
+// NOTE: Equal highs/lows don't cancel each other, so double tops/bottoms give
+//       two swings and the EQH/EQL logic pairs them.
 // ─────────────────────────────────────────────────────────────────────
 detect_swing_points() =>
-    if barstate.isconfirmed
-        lookback = i_swing_lookback
-
-        // Check if we have enough bars
-        if bar_index > lookback * 2
-            // Detect swing high at [lookback] position
-            bool is_swing_high = true
-            float pivot_high = high[lookback]
-
-            for j = 1 to lookback
-                if high[lookback] <= high[lookback - j] or high[lookback] <= high[lookback + j]
-                    is_swing_high := false
-                    break
-
-            if is_swing_high
-                // Create swing high
-                new_swing = SwingPoint.new(
-                    price = pivot_high,
-                    bar_idx = bar_index - lookback,
-                    is_high = true,
-                    is_internal = false,  // Will be determined later
-                    is_valid = true
-                )
-                array.push(g_swing_highs, new_swing)
-
-                // Limit array size
-                if array.size(g_swing_highs) > 50
+    if barstate.isconfirmed and bar_index >= 2 and not na(atr_value)
+        float confirm_dist = atr_value * SWING_CONFIRM_ATR
+        // RULE 1: new candidates at [1]
+        if high[1] > high[2] and high[1] >= high
+            array.push(g_pending_highs, SwingPoint.new(price = high[1], bar_idx = bar_index - 1, is_high = true, is_internal = false, is_valid = true))
+            if array.size(g_pending_highs) > SWING_PENDING_MAX
+                array.shift(g_pending_highs)
+        if low[1] < low[2] and low[1] <= low
+            array.push(g_pending_lows, SwingPoint.new(price = low[1], bar_idx = bar_index - 1, is_high = false, is_internal = false, is_valid = true))
+            if array.size(g_pending_lows) > SWING_PENDING_MAX
+                array.shift(g_pending_lows)
+        // RULE 2/3: resolve pending highs (oldest first keeps g_swing_highs in bar order)
+        int ih = 0
+        while ih < array.size(g_pending_highs)
+            SwingPoint cand = array.get(g_pending_highs, ih)
+            bool resolved = false
+            if high > cand.price
+                resolved := true
+            else if close <= cand.price - confirm_dist
+                array.push(g_swing_highs, cand)
+                if array.size(g_swing_highs) > SWING_MEMORY_MAX
                     array.shift(g_swing_highs)
-
-            // Detect swing low at [lookback] position
-            bool is_swing_low = true
-            float pivot_low = low[lookback]
-
-            for j = 1 to lookback
-                if low[lookback] >= low[lookback - j] or low[lookback] >= low[lookback + j]
-                    is_swing_low := false
-                    break
-
-            if is_swing_low
-                // Create swing low
-                new_swing = SwingPoint.new(
-                    price = pivot_low,
-                    bar_idx = bar_index - lookback,
-                    is_high = false,
-                    is_internal = false,
-                    is_valid = true
-                )
-                array.push(g_swing_lows, new_swing)
-
-                // Limit array size
-                if array.size(g_swing_lows) > 50
+                resolved := true
+            if resolved
+                array.remove(g_pending_highs, ih)
+            ih := resolved ? ih : ih + 1
+        // RULE 2/3: resolve pending lows
+        int il = 0
+        while il < array.size(g_pending_lows)
+            SwingPoint cand = array.get(g_pending_lows, il)
+            bool resolved = false
+            if low < cand.price
+                resolved := true
+            else if close >= cand.price + confirm_dist
+                array.push(g_swing_lows, cand)
+                if array.size(g_swing_lows) > SWING_MEMORY_MAX
                     array.shift(g_swing_lows)
+                resolved := true
+            if resolved
+                array.remove(g_pending_lows, il)
+            il := resolved ? il : il + 1
 
 // ─────────────────────────────────────────────────────────────────────
 // Check for Equal Highs (EQH) - REDESIGNED
@@ -1189,77 +1201,25 @@ check_equal_lows() =>
 // These are recent swing points that serve as BE references
 // ─────────────────────────────────────────────────────────────────────
 create_internal_levels() =>
-    // Create ITH from recent swing highs
+    // Turn every newly confirmed swing into an ITH/ITL. Several swings can confirm
+    // on the same candle, so walk all swings newer than the last one used.
     // NOTE: i_show_ith_itl is handled in render_liquidity_lines()
     // Data must always be collected for grading algorithms to work
     int swing_high_size = array.size(g_swing_highs)
     if swing_high_size > 0
-        recent_high = array.get(g_swing_highs, swing_high_size - 1)
-
-        // Check if ITH already exists
-        bool ith_exists = false
-        int liq_size_1 = array.size(g_liquidity_array)
-        if liq_size_1 > 0
-            for i = 0 to liq_size_1 - 1
-                if i < liq_size_1
-                    liq = array.get(g_liquidity_array, i)
-                    if liq.liq_type == "ITH" and liq.bar_idx == recent_high.bar_idx
-                        ith_exists := true
-                        break
-
-        // Never re-create a level from a swing already used (it may have been swept and forgotten)
-        if not ith_exists and recent_high.bar_idx > array.get(g_last_internal_bar, 0)
-            array.set(g_last_internal_bar, 0, recent_high.bar_idx)
-            new_ith = Liquidity.new(
-                level = recent_high.price,
-                original_level = recent_high.price,
-                liq_type = "ITH",
-                quality = "na",
-                bar_idx = recent_high.bar_idx,
-                last_touch_bar = recent_high.bar_idx,
-                touch_count = 1,
-                is_swept = false,
-                swept_bar = 0,
-                is_valid = true,
-                line_id = na,
-                label_id = na
-            )
-            array.push(g_liquidity_array, new_ith)
-
-    // Create ITL from recent swing lows
-    // NOTE: i_show_ith_itl is handled in render_liquidity_lines()
+        for i = 0 to swing_high_size - 1
+            SwingPoint sh = array.get(g_swing_highs, i)
+            // Never re-create a level from a swing already used (it may have been swept and forgotten)
+            if sh.bar_idx > array.get(g_last_internal_bar, 0)
+                array.set(g_last_internal_bar, 0, sh.bar_idx)
+                array.push(g_liquidity_array, Liquidity.new(level = sh.price, original_level = sh.price, liq_type = "ITH", quality = "na", bar_idx = sh.bar_idx, last_touch_bar = sh.bar_idx, touch_count = 1, is_swept = false, swept_bar = 0, is_valid = true, line_id = na, label_id = na))
     int swing_low_size = array.size(g_swing_lows)
     if swing_low_size > 0
-        recent_low = array.get(g_swing_lows, swing_low_size - 1)
-
-        bool itl_exists = false
-        int liq_size_2 = array.size(g_liquidity_array)
-        if liq_size_2 > 0
-            for i = 0 to liq_size_2 - 1
-                if i < liq_size_2
-                    liq = array.get(g_liquidity_array, i)
-                    if liq.liq_type == "ITL" and liq.bar_idx == recent_low.bar_idx
-                        itl_exists := true
-                        break
-
-        // Never re-create a level from a swing already used (it may have been swept and forgotten)
-        if not itl_exists and recent_low.bar_idx > array.get(g_last_internal_bar, 1)
-            array.set(g_last_internal_bar, 1, recent_low.bar_idx)
-            new_itl = Liquidity.new(
-                level = recent_low.price,
-                original_level = recent_low.price,
-                liq_type = "ITL",
-                quality = "na",
-                bar_idx = recent_low.bar_idx,
-                last_touch_bar = recent_low.bar_idx,
-                touch_count = 1,
-                is_swept = false,
-                swept_bar = 0,
-                is_valid = true,
-                line_id = na,
-                label_id = na
-            )
-            array.push(g_liquidity_array, new_itl)
+        for i = 0 to swing_low_size - 1
+            SwingPoint sl = array.get(g_swing_lows, i)
+            if sl.bar_idx > array.get(g_last_internal_bar, 1)
+                array.set(g_last_internal_bar, 1, sl.bar_idx)
+                array.push(g_liquidity_array, Liquidity.new(level = sl.price, original_level = sl.price, liq_type = "ITL", quality = "na", bar_idx = sl.bar_idx, last_touch_bar = sl.bar_idx, touch_count = 1, is_swept = false, swept_bar = 0, is_valid = true, line_id = na, label_id = na))
 
 // ─────────────────────────────────────────────────────────────────────
 // Check for liquidity sweeps (Enhanced for EQL/EQH)
