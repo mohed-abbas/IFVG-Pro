@@ -196,7 +196,6 @@ i_htf_border_width  = input.int(3, "HTF Border Width", minval=1, maxval=5, group
 // ─────────────────────────────────────────────────────────────────────
 string GROUP_PD_ZONES = "═══ PD Zones ═══"
 i_pd_timeframe                = input.timeframe("D",       "PD Timeframe",                  group=GROUP_PD_ZONES, tooltip="Higher timeframe used to derive the dealing range (default Daily).")
-i_pd_swing_lookback           = input.int(5, "PD Swing Lookback (left/right bars)", minval=2, maxval=20, group=GROUP_PD_ZONES, tooltip="leftbars and rightbars for ta.pivothigh/pivotlow on the PD timeframe.")
 i_show_pd_lines               = input.bool(true, "Show PD Zone Lines",              group=GROUP_PD_ZONES)
 i_show_pd_fills               = input.bool(false, "Show Zone Fills",                group=GROUP_PD_ZONES, tooltip="Linefill shading for premium (above EQ) and discount (below EQ).")
 i_show_ote                    = input.bool(false, "Show OTE Band (62%-79%)",        group=GROUP_PD_ZONES, tooltip="Visual only — does not affect grading.")
@@ -767,9 +766,72 @@ int htf_bar_idx = int(htf_bar_idx_raw)
 int htf2_bar_idx = int(htf2_bar_idx_raw)
 
 // ─── PD timeframe swing data (Phase 2 — PDZ-01) ─────────────
-// 1 call, 2 tuple elements. Security-call budget: 3 -> 4 of 40 after Phase 2.
-// pivothigh/pivotlow on PD TF returns the pivot PRICE when confirmed, na otherwise.
-[pd_pivot_high_raw, pd_pivot_low_raw] = request.security(syminfo.tickerid, i_pd_timeframe, [ta.pivothigh(i_pd_swing_lookback, i_pd_swing_lookback), ta.pivotlow(i_pd_swing_lookback, i_pd_swing_lookback)], lookahead = barmerge.lookahead_off)
+// 1 call, 4 tuple elements. Security-call budget: 3 -> 4 of 40 after Phase 2.
+// Same automatic swing rule as the chart (no lookback setting), evaluated on the PD TF:
+// RULE 1: candidate = ICT 3-candle swing at [1] (first of equal highs/lows wins).
+// RULE 2: confirmed when a PD candle closes SWING_CONFIRM_ATR x PD-ATR away.
+// RULE 3: cancelled when price trades beyond it before confirmation.
+// Returns the newest swing high/low confirmed on this PD bar (price, and its age in PD
+// bars from swing candle to confirmation); na when none confirmed.
+// NOTE: if several swings on one side confirm on the same PD bar, only the newest is used.
+pd_swing_feed() =>
+    var array<float> pend_h = array.new<float>()
+    var array<int> pend_h_bar = array.new<int>()
+    var array<float> pend_l = array.new<float>()
+    var array<int> pend_l_bar = array.new<int>()
+    float pd_atr = ta.atr(i_fvg_atr_period)
+    bool cand_h = high[1] > high[2] and high[1] >= high
+    bool cand_l = low[1] < low[2] and low[1] <= low
+    float out_h = na
+    int out_h_age = na
+    float out_l = na
+    int out_l_age = na
+    if bar_index >= 2 and not na(pd_atr)
+        if cand_h
+            array.push(pend_h, high[1])
+            array.push(pend_h_bar, bar_index - 1)
+            if array.size(pend_h) > SWING_PENDING_MAX
+                array.shift(pend_h)
+                array.shift(pend_h_bar)
+        if cand_l
+            array.push(pend_l, low[1])
+            array.push(pend_l_bar, bar_index - 1)
+            if array.size(pend_l) > SWING_PENDING_MAX
+                array.shift(pend_l)
+                array.shift(pend_l_bar)
+        int ih = 0
+        while ih < array.size(pend_h)
+            float ph = array.get(pend_h, ih)
+            bool resolved = false
+            if high > ph
+                resolved := true
+            else if close <= ph - pd_atr * SWING_CONFIRM_ATR
+                out_h := ph
+                out_h_age := bar_index - array.get(pend_h_bar, ih)
+                resolved := true
+            if resolved
+                array.remove(pend_h, ih)
+                array.remove(pend_h_bar, ih)
+            ih := resolved ? ih : ih + 1
+        int il = 0
+        while il < array.size(pend_l)
+            float pl = array.get(pend_l, il)
+            bool resolved = false
+            if low < pl
+                resolved := true
+            else if close >= pl + pd_atr * SWING_CONFIRM_ATR
+                out_l := pl
+                out_l_age := bar_index - array.get(pend_l_bar, il)
+                resolved := true
+            if resolved
+                array.remove(pend_l, il)
+                array.remove(pend_l_bar, il)
+            il := resolved ? il : il + 1
+    [out_h, out_h_age, out_l, out_l_age]
+
+[pd_pivot_high_raw, pd_pivot_high_age, pd_pivot_low_raw, pd_pivot_low_age] = request.security(syminfo.tickerid, i_pd_timeframe, pd_swing_feed(), lookahead = barmerge.lookahead_off)
+// Confirmation-lag window (chart bars) of the most recent PD swing, used by check_pd_sweeps()
+var int g_pd_lag_bars = 1
 
 // Track HTF bar changes to detect new HTF bars
 var int prev_htf_bar = na
@@ -1326,10 +1388,8 @@ check_pd_sweeps() =>
         // but applied unscoped it also nukes legitimate older pivots once a trend
         // closes past them — leaving cycle 4's fallback with zero candidates on the
         // trend-counter side. Same formula as the Step 4C push uses.
-        float sweep_pd_secs    = timeframe.in_seconds(i_pd_timeframe)
-        float sweep_chart_secs = timeframe.in_seconds(timeframe.period)
-        float sweep_ratio      = sweep_chart_secs > 0 ? (sweep_pd_secs / sweep_chart_secs) : 1.0
-        int sweep_lag_bars     = int(math.max(1, math.round((i_pd_swing_lookback + 1) * sweep_ratio)))
+        // Lag of the most recent PD swing (set by the Step 4C push).
+        int sweep_lag_bars     = g_pd_lag_bars
         for i = 0 to pd_liq_size - 1
             if i < pd_liq_size
                 liq = array.get(g_pd_liquidity_array, i)
@@ -1448,6 +1508,20 @@ find_previous_swing_low(int before_bar) =>
                     result := swing.price
                     closest_bar := swing.bar_idx
 
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Bar index of the most recent confirmed swing in `swings` before `before_bar` (na if none)
+// ─────────────────────────────────────────────────────────────────────
+find_swing_bar_before(array<SwingPoint> swings, int before_bar) =>
+    int result = na
+    int n = array.size(swings)
+    if n > 0
+        for i = n - 1 to 0
+            SwingPoint sp = array.get(swings, i)
+            if sp.bar_idx < before_bar
+                result := sp.bar_idx
+                break
     result
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1622,7 +1696,10 @@ is_fvg_singular(FVG source_fvg) =>
 // Returns true if an active opposite-direction FVG was found where
 // candle bodies respected the zone (no body close through it per D-04).
 // ─────────────────────────────────────────────────────────────────────
-check_delivery_from_fvg(bool ifvg_is_bullish, int lookback) =>
+// RULE (automatic window, no lookback): the source FVG must have formed inside the leg
+// that led into the setup — at or after `window_start`, the opposite swing the move
+// started from. Body respect is checked up to 499 bars (max_bars_back).
+check_delivery_from_fvg(bool ifvg_is_bullish, int window_start) =>
     bool result = false
     // For bullish IFVG, look for bearish source FVG (price delivered DOWN from it)
     // For bearish IFVG, look for bullish source FVG (price delivered UP from it)
@@ -1638,10 +1715,10 @@ check_delivery_from_fvg(bool ifvg_is_bullish, int lookback) =>
                 FVG candidate = array.get(g_htf_fvg_array, i)
                 if candidate.is_bullish == look_for_bullish and candidate.status == "active"
                     int bar_dist = bar_index - candidate.end_bar
-                    if bar_dist > 0 and bar_dist <= lookback
+                    if bar_dist > 0 and candidate.start_bar >= window_start
                         // Body respect check (per D-04): no body close through zone
                         bool bodies_respected = true
-                        int check_bars = math.min(bar_dist - 1, 50)
+                        int check_bars = int(math.min(bar_dist - 1, 499))
                         for k = 1 to check_bars
                             if bodies_respected
                                 if look_for_bullish
@@ -1661,9 +1738,9 @@ check_delivery_from_fvg(bool ifvg_is_bullish, int lookback) =>
                 FVG candidate = array.get(g_htf2_fvg_array, i)
                 if candidate.is_bullish == look_for_bullish and candidate.status == "active"
                     int bar_dist = bar_index - candidate.end_bar
-                    if bar_dist > 0 and bar_dist <= lookback
+                    if bar_dist > 0 and candidate.start_bar >= window_start
                         bool bodies_respected = true
-                        int check_bars = math.min(bar_dist - 1, 50)
+                        int check_bars = int(math.min(bar_dist - 1, 499))
                         for k = 1 to check_bars
                             if bodies_respected
                                 if look_for_bullish
@@ -1681,9 +1758,9 @@ check_delivery_from_fvg(bool ifvg_is_bullish, int lookback) =>
                 FVG candidate = array.get(g_fvg_array, i)
                 if candidate.is_bullish == look_for_bullish and candidate.status == "active"
                     int bar_dist = bar_index - candidate.end_bar
-                    if bar_dist > 0 and bar_dist <= lookback
+                    if bar_dist > 0 and candidate.start_bar >= window_start
                         bool bodies_respected = true
-                        int check_bars = math.min(bar_dist - 1, 50)
+                        int check_bars = int(math.min(bar_dist - 1, 499))
                         for k = 1 to check_bars
                             if bodies_respected
                                 if look_for_bullish
@@ -1893,7 +1970,11 @@ check_inversions() =>
                             bool has_sweep = check_setup_sweep(not ifvg_is_bullish, fvg.start_bar)
 
                             // Check delivery from prior FVG (per D-01)
-                            bool has_delivery = check_delivery_from_fvg(ifvg_is_bullish, 20)
+                            // Delivery window starts at the swing the move into the setup came from
+                            // (long: swing high before the FVG; short: swing low), else 499 bars back
+                            int leg_start = find_swing_bar_before(ifvg_is_bullish ? g_swing_highs : g_swing_lows, fvg.start_bar)
+                            int delivery_start = na(leg_start) ? bar_index - 499 : leg_start
+                            bool has_delivery = check_delivery_from_fvg(ifvg_is_bullish, delivery_start)
 
                             // Assess momentum (returns int 0-2 per D-08)
                             int momentum_score = assess_momentum(open, high, low, close)
@@ -2977,13 +3058,18 @@ if i_show_indicator
         float pd_secs    = timeframe.in_seconds(i_pd_timeframe)
         float chart_secs = timeframe.in_seconds(timeframe.period)
         float ratio      = chart_secs > 0 ? (pd_secs / chart_secs) : 1.0
-        int lag_bars     = int(math.max(1, math.round((i_pd_swing_lookback + 1) * ratio)))
-        int pivot_bar    = int(math.max(0, bar_index - lag_bars))
+        // Automatic swings: the lag is the swing's own age in PD bars (swing candle -> confirmation)
         if not na(pd_pivot_high_raw) and pd_bar_changed
+            int lag_h = int(math.max(1, math.round((pd_pivot_high_age + 1) * ratio)))
+            int pivot_bar = int(math.max(0, bar_index - lag_h))
+            g_pd_lag_bars := lag_h
             array.push(g_pd_swing_highs, SwingPoint.new(price=pd_pivot_high_raw, bar_idx=pivot_bar, is_high=true, is_internal=false, is_valid=true))
             if array.size(g_pd_swing_highs) > 50
                 array.shift(g_pd_swing_highs)
         if not na(pd_pivot_low_raw) and pd_bar_changed
+            int lag_l = int(math.max(1, math.round((pd_pivot_low_age + 1) * ratio)))
+            int pivot_bar = int(math.max(0, bar_index - lag_l))
+            g_pd_lag_bars := int(math.max(g_pd_lag_bars, lag_l))
             array.push(g_pd_swing_lows, SwingPoint.new(price=pd_pivot_low_raw, bar_idx=pivot_bar, is_high=false, is_internal=false, is_valid=true))
             if array.size(g_pd_swing_lows) > 50
                 array.shift(g_pd_swing_lows)
@@ -3100,11 +3186,101 @@ if i_show_indicator
         if not na(safety_ith) and not na(safety_itl) and safety_ith.level > safety_itl.level
             sel_ith := safety_ith
             sel_itl := safety_itl
-    if not na(sel_ith) and not na(sel_itl) and sel_ith.level > sel_itl.level
-        bool rotated = na(g_current_range) or not g_current_range.is_valid or g_current_range.high_bar_idx != sel_ith.bar_idx or g_current_range.low_bar_idx != sel_itl.bar_idx
+    // Leg-based dealing range (preferred): the range spans the CURRENT leg.
+    // Bullish leg:
+    //   RULE 1 (start): walk back through the PD swing lows before the newest swing high
+    //     while each older low is LOWER (chain of higher lows); stop at the first older low
+    //     that is higher. The lowest low of the chain is the leg start (range 0).
+    //     Trade-off (accepted 2026-10-06): a small sweep low inside a consolidation before
+    //     the rally becomes the leg start, even if a similar low sits just before it.
+    //   RULE 2 (top): the HIGHEST PD swing high after the start (range 1) — a lower high
+    //     in a pullback never replaces the top.
+    //   RULE 3 (intact): no PD swing low after the start is below it (no lower low).
+    // Bearish leg: mirrored (chain of lower highs, lowest low after the start, no higher high).
+    // RULE 4: if both legs are intact, use the OUTER one (older start) — a pullback inside
+    //   a range is never treated as a new range. Otherwise use whichever is intact.
+    // Independent of how many swings are in memory. Falls back to the freshest-unswept
+    // selection above when no leg can be built.
+    float bull_hi = na
+    int bull_hi_bar = na
+    float bull_lo = na
+    int bull_lo_bar = na
+    float bear_hi = na
+    int bear_hi_bar = na
+    float bear_lo = na
+    int bear_lo_bar = na
+    bool bull_ok = false
+    bool bear_ok = false
+    int n_ph = array.size(g_pd_swing_highs)
+    int n_pl = array.size(g_pd_swing_lows)
+    if n_ph > 0 and n_pl > 0
+        SwingPoint last_h = array.get(g_pd_swing_highs, n_ph - 1)
+        SwingPoint last_l = array.get(g_pd_swing_lows, n_pl - 1)
+        // Bullish leg: start = chain of higher lows before the newest high
+        for k = n_pl - 1 to 0
+            SwingPoint lk = array.get(g_pd_swing_lows, k)
+            if lk.bar_idx < last_h.bar_idx
+                if na(bull_lo) or lk.price < bull_lo
+                    bull_lo := lk.price
+                    bull_lo_bar := lk.bar_idx
+                else
+                    break
+        if not na(bull_lo)
+            bull_ok := true
+            for k = 0 to n_ph - 1
+                SwingPoint hk = array.get(g_pd_swing_highs, k)
+                if hk.bar_idx > bull_lo_bar and (na(bull_hi) or hk.price > bull_hi)
+                    bull_hi := hk.price
+                    bull_hi_bar := hk.bar_idx
+            for k = 0 to n_pl - 1
+                SwingPoint lk = array.get(g_pd_swing_lows, k)
+                if lk.bar_idx > bull_lo_bar and lk.price < bull_lo
+                    bull_ok := false
+            bull_ok := bull_ok and not na(bull_hi)
+        // Bearish leg: start = chain of lower highs before the newest low
+        for k = n_ph - 1 to 0
+            SwingPoint hk = array.get(g_pd_swing_highs, k)
+            if hk.bar_idx < last_l.bar_idx
+                if na(bear_hi) or hk.price > bear_hi
+                    bear_hi := hk.price
+                    bear_hi_bar := hk.bar_idx
+                else
+                    break
+        if not na(bear_hi)
+            bear_ok := true
+            for k = 0 to n_pl - 1
+                SwingPoint lk = array.get(g_pd_swing_lows, k)
+                if lk.bar_idx > bear_hi_bar and (na(bear_lo) or lk.price < bear_lo)
+                    bear_lo := lk.price
+                    bear_lo_bar := lk.bar_idx
+            for k = 0 to n_ph - 1
+                SwingPoint hk = array.get(g_pd_swing_highs, k)
+                if hk.bar_idx > bear_hi_bar and hk.price > bear_hi
+                    bear_ok := false
+            bear_ok := bear_ok and not na(bear_lo)
+    bool use_bull = false
+    if bull_ok and bear_ok
+        use_bull := bull_lo_bar <= bear_hi_bar
+    else
+        use_bull := bull_ok
+    bool any_leg = bull_ok or bear_ok
+    float leg_hi = not any_leg ? na : (use_bull ? bull_hi : bear_hi)
+    int leg_hi_bar = use_bull ? bull_hi_bar : bear_hi_bar
+    float leg_lo = not any_leg ? na : (use_bull ? bull_lo : bear_lo)
+    int leg_lo_bar = use_bull ? bull_lo_bar : bear_lo_bar
+    if na(leg_hi) or na(leg_lo)
+        leg_hi := na
+        leg_lo := na
+        if not na(sel_ith) and not na(sel_itl)
+            leg_hi := sel_ith.level
+            leg_hi_bar := sel_ith.bar_idx
+            leg_lo := sel_itl.level
+            leg_lo_bar := sel_itl.bar_idx
+    if not na(leg_hi) and not na(leg_lo) and leg_hi > leg_lo
+        bool rotated = na(g_current_range) or not g_current_range.is_valid or g_current_range.high_bar_idx != leg_hi_bar or g_current_range.low_bar_idx != leg_lo_bar
         if rotated
             clear_range_drawings(g_current_range)
-            g_current_range := DealingRange.new(high_price=sel_ith.level, low_price=sel_itl.level, high_bar_idx=sel_ith.bar_idx, low_bar_idx=sel_itl.bar_idx, is_valid=true, line_high=na, line_eq=na, line_low=na, label_high=na, label_eq=na, label_low=na, fill_premium=na, fill_discount=na, ote_line_top=na, ote_line_bot=na, ote_fill=na)
+            g_current_range := DealingRange.new(high_price=leg_hi, low_price=leg_lo, high_bar_idx=leg_hi_bar, low_bar_idx=leg_lo_bar, is_valid=true, line_high=na, line_eq=na, line_low=na, label_high=na, label_eq=na, label_low=na, fill_premium=na, fill_discount=na, ote_line_top=na, ote_line_bot=na, ote_fill=na)
     else
         if not na(g_current_range) and g_current_range.is_valid
             clear_range_drawings(g_current_range)
@@ -3219,4 +3395,9 @@ if barstate.islast
             if not na(dq.line_id)
                 dbg_drawn += 1
         string dbg_txt = "DEBUG" + "\nbars processed: " + str.tostring(bar_index) + "\nATR: " + str.tostring(atr_value, format.mintick) + "\nshow ITH/ITL: " + str.tostring(i_show_ith_itl) + "\ncandidates H/L: " + str.tostring(array.get(g_dbg_swing, 0)) + "/" + str.tostring(array.get(g_dbg_swing, 3)) + "\nconfirmed H/L: " + str.tostring(array.get(g_dbg_swing, 1)) + "/" + str.tostring(array.get(g_dbg_swing, 4)) + "\ncancelled H/L: " + str.tostring(array.get(g_dbg_swing, 2)) + "/" + str.tostring(array.get(g_dbg_swing, 5)) + "\npending H/L: " + str.tostring(array.size(g_pending_highs)) + "/" + str.tostring(array.size(g_pending_lows)) + "\nswings H/L: " + str.tostring(array.size(g_swing_highs)) + "/" + str.tostring(array.size(g_swing_lows)) + "\nliq total/live: " + str.tostring(array.size(g_liquidity_array)) + "/" + str.tostring(dbg_live) + "\nlive ITH/ITL: " + str.tostring(dbg_ithl_live) + "\nlive strong: " + str.tostring(dbg_strong) + "\nundecided: " + str.tostring(dbg_undecided) + "\ndisplayable: " + str.tostring(dbg_disp) + "\nwith line drawn: " + str.tostring(dbg_drawn)
+        int dbg_pd_live = 0
+        for pq in g_pd_liquidity_array
+            if pq.is_valid and not pq.is_swept
+                dbg_pd_live += 1
+        dbg_txt := dbg_txt + "\nPD swings H/L: " + str.tostring(array.size(g_pd_swing_highs)) + "/" + str.tostring(array.size(g_pd_swing_lows)) + "\nPD levels total/live: " + str.tostring(array.size(g_pd_liquidity_array)) + "/" + str.tostring(dbg_pd_live) + "\nPD lag bars: " + str.tostring(g_pd_lag_bars) + "\nPD range: " + (na(g_current_range) ? "none" : (g_current_range.is_valid ? "valid" : "invalid"))
         g_dbg_label := label.new(bar_index + 5, high, dbg_txt, style=label.style_label_left, color=color.new(color.black, 10), textcolor=color.white, size=size.normal)

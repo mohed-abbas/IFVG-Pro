@@ -279,3 +279,31 @@ Two FVGs at completely different price levels got merged just because they were 
 **Rule for future changes:** don't wrap code that only mutates `var` arrays in a function whose result is unused. If detection silently produces nothing, check the dashboard Liquidity count first.
 
 **Debug panel (added 2026-10-06):** Settings → Debug → "Show Debug Panel" (off by default, kept as the last input so it never shifts saved settings). Shows swing counters (candidates, confirmed, cancelled, pending, in memory) and liquidity counters (total/live, live ITH/ITL, live strong, undecided, displayable, drawn). Counters always run; the setting only hides the label.
+
+---
+
+## Issue 15: Remaining Lookback Settings (PD Swing Lookback, Delivery 20 Bars)
+
+**Status:** Resolved (2026-10-06, verified on TradingView: EUR/USD, GBPJPY, XAUUSD, NQ — 15m chart, PD TF 15m). Not yet observed: a bearish flip after a confirmed lower low; PD TF = Daily.
+**Affected Code:** `pd_swing_feed()` + PD `request.security` (Section 5B), `check_pd_sweeps()` (Section 6), Step 4C dealing-range selection (Section 12), `check_delivery_from_fvg()` / `find_swing_bar_before()` (Section 7–8)
+
+**Goal:** No bar-lookback settings (user preference). Remove "PD Swing Lookback" and the hardcoded 20-bar delivery window.
+
+**PD swings:** same automatic rule as chart swings (Issue 12), run on the PD timeframe inside `request.security`: 3-candle candidate, confirmed by a close 1 PD-ATR away, cancelled if exceeded first. Returns the newest confirmed high/low per PD bar plus its age (used for the chart-bar position and the born-broken lag window). If several swings on one side confirm on the same PD bar, only the newest is used.
+
+**Dealing range — leg-based (replaces "freshest unswept" as the primary rule):**
+- Problem 1: with the faster swings, small pullback lows became PD swings and the freshest-unswept rule anchored the range to them (tiny range).
+- Problem 2 (first leg rule, "lowest low since price was last above H"): picked the *external* range (EUR/USD: old 1.1160 low under the 1.1287 high), and when no higher high was in memory it took the lowest low in all of memory (MNQ: 30,531) — depended on how much history was loaded.
+- Problem 3 (retest 2026-10-06, EUR/USD, GBPJPY, XAUUSD): the top was the *newest* swing high, so a lower high in a pullback became "1"; on XAUUSD a pullback low + lower high flipped the range to a tiny bearish one without any break.
+- **Rule (bullish leg; bearish mirrored):**
+  1. Start (0): walk back through the swing lows before the newest swing high while each older low is lower (chain of higher lows); stop at the first older low that is higher.
+  2. Top (1): the highest swing high after the start — a lower high never replaces it.
+  3. Intact: no swing low after the start is below it.
+  4. If a bullish and a bearish leg are both intact, use the outer one (older start), so a pullback inside a range is never a new range.
+- Independent of how many swings are in memory.
+- Falls back to the old freshest-unswept selection when no leg can be built.
+- **Accepted trade-off:** a small sweep low inside a consolidation before the rally becomes the leg start (it is the true origin in ICT terms), even if a similar low sits just before it.
+
+**Delivery:** the source FVG must have formed inside the leg that led into the setup — at or after the swing the move came from (swing high before a long setup's FVG, swing low before a short's); body-respect check up to 499 bars. Fallback window: 499 bars.
+
+**Settings:** "PD Swing Lookback" removed → saved settings shift; use Defaults → Reset settings once.
