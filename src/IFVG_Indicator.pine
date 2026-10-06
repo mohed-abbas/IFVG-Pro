@@ -78,6 +78,9 @@ type Liquidity
     line line_id        // Reference to drawn line
     label label_id      // Reference to label
     int mitigated_bar   // Bar index where level was swept or broken (na while live)
+    bool is_strong = false    // Strong High/Low: its leg broke structure (decided once)
+    bool is_decided = false   // Strong/weak decision is final
+    float structure_ref = na  // ITH: swing low the rally came from; ITL: swing high the drop came from
 
 // Type: Inverted Fair Value Gap (Extended for Phase 2)
 type IFVG
@@ -322,7 +325,7 @@ var array<int> g_last_internal_bar = array.from(-1, -1)
 // Mitigated levels are kept LIQ_MITIGATED_KEEP_BARS for sweep crediting, then forgotten.
 int LIQ_MEMORY_MAX          = 200  // Hard cap on remembered levels
 int LIQ_MITIGATED_KEEP_BARS = 500  // Matches max_bars_back (sweep window limit)
-int LIQ_DRAW_PER_SIDE       = 3    // Live levels drawn above and below price
+int LIQ_DRAW_PER_SIDE       = 3    // Live levels drawn above and below price (per strong/weak group)
 
 // PD zone state (Phase 2)
 var array<SwingPoint> g_pd_swing_highs = array.new<SwingPoint>()
@@ -1197,12 +1200,29 @@ check_equal_lows() =>
                                         break  // Only create one EQL per swing low
 
 // ─────────────────────────────────────────────────────────────────────
+// Price of the most recent confirmed swing in `swings` that formed before `before_bar`
+// (na if none). Swing arrays are kept in bar order.
+// ─────────────────────────────────────────────────────────────────────
+find_swing_before(array<SwingPoint> swings, int before_bar) =>
+    float result = na
+    int n = array.size(swings)
+    if n > 0
+        for i = n - 1 to 0
+            SwingPoint sp = array.get(swings, i)
+            if sp.bar_idx < before_bar
+                result := sp.price
+                break
+    result
+
+// ─────────────────────────────────────────────────────────────────────
 // Create Internal Highs/Lows (ITH/ITL)
 // These are recent swing points that serve as BE references
 // ─────────────────────────────────────────────────────────────────────
 create_internal_levels() =>
     // Turn every newly confirmed swing into an ITH/ITL. Several swings can confirm
     // on the same candle, so walk all swings newer than the last one used.
+    // Strong/weak: structure_ref is the opposite swing the move came from; if a close
+    // already broke it between the swing candle and now, the level is Strong at once.
     // NOTE: i_show_ith_itl is handled in render_liquidity_lines()
     // Data must always be collected for grading algorithms to work
     int swing_high_size = array.size(g_swing_highs)
@@ -1212,14 +1232,28 @@ create_internal_levels() =>
             // Never re-create a level from a swing already used (it may have been swept and forgotten)
             if sh.bar_idx > array.get(g_last_internal_bar, 0)
                 array.set(g_last_internal_bar, 0, sh.bar_idx)
-                array.push(g_liquidity_array, Liquidity.new(level = sh.price, original_level = sh.price, liq_type = "ITH", quality = "na", bar_idx = sh.bar_idx, last_touch_bar = sh.bar_idx, touch_count = 1, is_swept = false, swept_bar = 0, is_valid = true, line_id = na, label_id = na))
+                float ref_low = find_swing_before(g_swing_lows, sh.bar_idx)
+                bool strong_h = false
+                if not na(ref_low)
+                    int span_h = int(math.min(bar_index - sh.bar_idx, 499))
+                    for k = 0 to span_h
+                        if close[k] < ref_low
+                            strong_h := true
+                array.push(g_liquidity_array, Liquidity.new(level = sh.price, original_level = sh.price, liq_type = "ITH", quality = "na", bar_idx = sh.bar_idx, last_touch_bar = sh.bar_idx, touch_count = 1, is_swept = false, swept_bar = 0, is_valid = true, line_id = na, label_id = na, is_strong = strong_h, is_decided = strong_h or na(ref_low), structure_ref = ref_low))
     int swing_low_size = array.size(g_swing_lows)
     if swing_low_size > 0
         for i = 0 to swing_low_size - 1
             SwingPoint sl = array.get(g_swing_lows, i)
             if sl.bar_idx > array.get(g_last_internal_bar, 1)
                 array.set(g_last_internal_bar, 1, sl.bar_idx)
-                array.push(g_liquidity_array, Liquidity.new(level = sl.price, original_level = sl.price, liq_type = "ITL", quality = "na", bar_idx = sl.bar_idx, last_touch_bar = sl.bar_idx, touch_count = 1, is_swept = false, swept_bar = 0, is_valid = true, line_id = na, label_id = na))
+                float ref_high = find_swing_before(g_swing_highs, sl.bar_idx)
+                bool strong_l = false
+                if not na(ref_high)
+                    int span_l = int(math.min(bar_index - sl.bar_idx, 499))
+                    for k = 0 to span_l
+                        if close[k] > ref_high
+                            strong_l := true
+                array.push(g_liquidity_array, Liquidity.new(level = sl.price, original_level = sl.price, liq_type = "ITL", quality = "na", bar_idx = sl.bar_idx, last_touch_bar = sl.bar_idx, touch_count = 1, is_swept = false, swept_bar = 0, is_valid = true, line_id = na, label_id = na, is_strong = strong_l, is_decided = strong_l or na(ref_high), structure_ref = ref_high))
 
 // ─────────────────────────────────────────────────────────────────────
 // Check for liquidity sweeps (Enhanced for EQL/EQH)
@@ -1258,6 +1292,21 @@ check_liquidity_sweeps() =>
                         if close < liq.level
                             liq.is_valid := false
                             liq.mitigated_bar := bar_index
+                // Strong/weak decision (once): Strong if a close breaks structure_ref before a
+                // newer same-side swing confirms; weak if that swing comes first or the level is mitigated
+                if not liq.is_decided and (liq.liq_type == "ITH" or liq.liq_type == "ITL")
+                    if not liq.is_valid or liq.is_swept
+                        liq.is_decided := true
+                    else if liq.liq_type == "ITH" and close < liq.structure_ref
+                        liq.is_strong := true
+                        liq.is_decided := true
+                    else if liq.liq_type == "ITL" and close > liq.structure_ref
+                        liq.is_strong := true
+                        liq.is_decided := true
+                    else if liq.liq_type == "ITH" and array.size(g_swing_highs) > 0 and array.get(g_swing_highs, array.size(g_swing_highs) - 1).bar_idx > liq.bar_idx
+                        liq.is_decided := true
+                    else if liq.liq_type == "ITL" and array.size(g_swing_lows) > 0 and array.get(g_swing_lows, array.size(g_swing_lows) - 1).bar_idx > liq.bar_idx
+                        liq.is_decided := true
 
 // ─────────────────────────────────────────────────────────────────────
 // Create PD Internal Highs/Lows (PD_ITH/PD_ITL) — mirror of create_internal_levels()
@@ -2551,6 +2600,17 @@ count_live_liquidity() =>
     live
 
 // ─────────────────────────────────────────────────────────────────────
+// n-th smallest value of an array (na when empty; largest value if fewer than n)
+// ─────────────────────────────────────────────────────────────────────
+nth_smallest(array<float> values, int n) =>
+    float result = na
+    int sz = array.size(values)
+    if sz > 0
+        array.sort(values, order.ascending)
+        result := array.get(values, int(math.min(n, sz)) - 1)
+    result
+
+// ─────────────────────────────────────────────────────────────────────
 // Whether a liquidity level's TYPE is enabled for display
 // (visibility toggles only — data is always kept for grading)
 // ─────────────────────────────────────────────────────────────────────
@@ -2569,21 +2629,29 @@ render_liquidity_lines() =>
     if liq_size > 0
         // Pass 1: distance cut-offs so only the nearest LIQ_DRAW_PER_SIDE live levels
         // above and below price are drawn (all live levels stay in memory)
-        array<float> above_dist = array.new<float>()
-        array<float> below_dist = array.new<float>()
+        // Strong and weak levels are ranked separately, so a Strong High/Low is never
+        // hidden behind nearer weak pullback levels
+        array<float> above_strong = array.new<float>()
+        array<float> above_weak = array.new<float>()
+        array<float> below_strong = array.new<float>()
+        array<float> below_weak = array.new<float>()
         for i = 0 to liq_size - 1
             Liquidity lq = array.get(g_liquidity_array, i)
             if is_liq_displayable(lq) and lq.is_valid and not lq.is_swept
-                if lq.level >= close
-                    array.push(above_dist, lq.level - close)
-                else
-                    array.push(below_dist, close - lq.level)
-        array.sort(above_dist, order.ascending)
-        array.sort(below_dist, order.ascending)
-        int n_above = array.size(above_dist)
-        int n_below = array.size(below_dist)
-        float above_cut = n_above > 0 ? array.get(above_dist, int(math.min(LIQ_DRAW_PER_SIDE, n_above)) - 1) : na
-        float below_cut = n_below > 0 ? array.get(below_dist, int(math.min(LIQ_DRAW_PER_SIDE, n_below)) - 1) : na
+                bool lq_above = lq.level >= close
+                float lq_dist = math.abs(lq.level - close)
+                if lq_above and lq.is_strong
+                    array.push(above_strong, lq_dist)
+                if lq_above and not lq.is_strong
+                    array.push(above_weak, lq_dist)
+                if not lq_above and lq.is_strong
+                    array.push(below_strong, lq_dist)
+                if not lq_above and not lq.is_strong
+                    array.push(below_weak, lq_dist)
+        float above_strong_cut = nth_smallest(above_strong, LIQ_DRAW_PER_SIDE)
+        float above_weak_cut = nth_smallest(above_weak, LIQ_DRAW_PER_SIDE)
+        float below_strong_cut = nth_smallest(below_strong, LIQ_DRAW_PER_SIDE)
+        float below_weak_cut = nth_smallest(below_weak, LIQ_DRAW_PER_SIDE)
         // Pass 2: draw
         for i = 0 to liq_size - 1
             if i < liq_size
@@ -2592,9 +2660,11 @@ render_liquidity_lines() =>
                 bool is_near = false
                 if not is_mitigated
                     if liq.level >= close
-                        is_near := not na(above_cut) and liq.level - close <= above_cut
+                        float cut_a = liq.is_strong ? above_strong_cut : above_weak_cut
+                        is_near := not na(cut_a) and liq.level - close <= cut_a
                     else
-                        is_near := not na(below_cut) and close - liq.level <= below_cut
+                        float cut_b = liq.is_strong ? below_strong_cut : below_weak_cut
+                        is_near := not na(cut_b) and close - liq.level <= cut_b
                 bool should_draw = is_liq_displayable(liq) and (is_mitigated ? i_show_mitigated_liq : is_near)
                 // Delete drawings and skip levels that are hidden, far from price, or mitigated (unless shown)
                 if not should_draw
@@ -2640,6 +2710,9 @@ render_liquidity_lines() =>
                         line_color := i_ithl_color
                         line_style := line.style_dashed
 
+                // Strong High/Low: thicker line
+                if liq.is_strong
+                    line_width := 2
                 right_edge = bar_index + i_extend_bars
 
                 // Draw line
@@ -2655,7 +2728,7 @@ render_liquidity_lines() =>
 
                 // Draw label with enhanced info
                 if i_show_labels
-                    label_text = liq.liq_type
+                    label_text = liq.is_strong ? (liq.liq_type == "ITH" ? "Strong High" : "Strong Low") : liq.liq_type
 
                     if liq.liq_type == "EQH" or liq.liq_type == "EQL"
                         // Build label based on quality:

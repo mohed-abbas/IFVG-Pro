@@ -225,3 +225,30 @@ Two FVGs at completely different price levels got merged just because they were 
 - Liquidity memory limit raised to 200 (`LIQ_MEMORY_MAX`). When full and no mitigated level is left to drop, the live level farthest from price is dropped (not the oldest), so major levels within reach are kept. Verified: memory fills with mitigated levels, live levels untouched.
 
 **Note — settings shift after removing an input:** TradingView stores input values by position. Removing an input shifts saved values onto the wrong settings (observed: "Show ITH/ITL" turned off, hiding all ITH/ITL). After any update that removes a setting: open settings → Defaults → Reset settings (then re-save your own defaults).
+
+---
+
+## Issue 13: Important Swing Levels Hidden Behind Minor Pullback Levels
+
+**Status:** Resolved (2026-10-06, verified on TradingView, 1m and 15m)
+**Commits:** "Phase 4: Strong High/Low (structure-based) liquidity drawing"
+**Affected Code:** `create_internal_levels()`, `find_swing_before()`, `check_liquidity_sweeps()` (Section 6), `render_liquidity_lines()` (Section 10)
+**Spec:** `.planning/notes/major-minor-liquidity.md`
+
+**Symptom:** With only the 3 nearest live levels per side drawn, the high that started a whole leg was hidden behind small pullback highs closer to price, although it was still live in memory.
+
+**Rejected approach:** "Major" = price moved ≥ 3 ATR away at any time since the swing. On TradingView 85 of 87 live levels became major (distance grows with time). A first-leg ATR variant was also rejected (a 1-ATR bounce forms a swing and cuts a big leg in two).
+
+**Decision (2026-10-06):** ICT/SMC strong vs weak, named "Strong High" / "Strong Low":
+- **Strong High:** after the ITH, a candle closes below the swing low the rally came from before a newer swing high confirms (it broke structure).
+- **Strong Low:** mirrored.
+- **Weak (shown as ITH/ITL):** a newer swing forms first, or the level is mitigated first.
+- Decided once during that leg; no ATR, no setting.
+
+**Solution:**
+- New `Liquidity` fields `is_strong`, `is_decided`, `structure_ref`.
+- Drawing per side: 3 nearest live strong + 3 nearest live weak (weak includes EQH/EQL); strong = width 2, label "Strong High"/"Strong Low".
+- Drawing only; sweeps, DOL, SL and grading unchanged.
+- Verified: about 60% of *live* levels are strong (weak pullback levels are usually mitigated quickly, so the live set leans strong); 1 undecided level per chart.
+
+**Known cosmetic issue:** labels overlap when a level sits at nearly the same price as a setup line (e.g. "Strong Low" over "B BUY").

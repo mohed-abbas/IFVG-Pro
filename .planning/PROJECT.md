@@ -81,6 +81,7 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 | Swept (wick + close back) and broken (body close through) are distinct; broken levels can't be swept | ICT definition; stops false sweeps of already-broken levels | ✓ Good |
 | Liquidity memory separate from drawing (live levels kept until mitigated) | Old major levels were forgotten after 4 new ones | ✓ Good |
 | Swings = ICT 3-candle candidate confirmed by a 1-ATR close away (no lookback input) | Adapts to volatility, fast confirmation, keeps double tops | ✓ Good |
+| Strong High/Low = level whose leg broke structure before a newer swing formed; drawn separately from weak levels | Most important levels were hidden behind nearer pullback levels; ATR-distance 'major' made 98% major | ✓ Good |
 | barstate.isconfirmed only | Prevents repainting — critical for trading decisions | ✓ Good |
 | HTF swing-based PD zones over daily range | More accurate ICT dealing range concept | — Pending |
 | Hybrid grading (tier + quality score) | Separates mandatory criteria from quality modifiers | ✓ Good |
