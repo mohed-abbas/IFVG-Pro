@@ -86,6 +86,8 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 | SL at most recent live Strong High/Low beyond the zone (fallback ITH/ITL, then FVG edge); default SL type | Wider, structure-protected stop; old SL used raw swings before FVG formation | ✓ Good |
 | PD swings use the automatic swing rule on the PD TF; dealing range = current leg (higher-low chain start, extreme top, outer leg wins) | No lookback settings; freshest-unswept anchored to pullback swings, first leg rule depended on memory size | ✓ Good |
 | Delivery source FVG must form inside the leg into the setup (no 20-bar window) | Structural like the sweep window; no lookback setting | — Pending |
+| Series of Gaps: chain same-direction FVGs while candles between are the move's color; fire once on a close through all (2026-10-06) | Strategy 7.1; separate setups per gap fired too early | ✓ Good |
+| FVG memory fixed at 50; "Max Active FVGs" only limits drawn boxes | A cap of 3 evicted the top gaps of a series | ✓ Good |
 | barstate.isconfirmed only | Prevents repainting — critical for trading decisions | ✓ Good |
 | HTF swing-based PD zones over daily range | More accurate ICT dealing range concept | — Pending |
 | Hybrid grading (tier + quality score) | Separates mandatory criteria from quality modifiers | ✓ Good |

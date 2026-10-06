@@ -129,7 +129,7 @@ The window is therefore set by the setup itself (3 candles on a fast M1 setup, 4
 
 ## Issue 7: FVG Merge Creating Oversized Zones on Lower Timeframes
 
-**Status:** Regressed — size-ratio/proximity guards reverted by `732356d`; opposite-color rule added later (`23c84e7`, `817ed9f`, `140634e`)
+**Status:** Resolved (2026-10-06, verified on TradingView) — replaced by the Series of Gaps rule below
 **Commits:** `4e0bd50`
 **Affected Code:** `merge_with_existing_fvg()` (Section 4)
 
@@ -144,6 +144,14 @@ Two FVGs at completely different price levels got merged just because they were 
 **Solution:**
 - Added **price proximity guard**: FVGs must overlap in price OR be within 0.5 ATR of each other to merge.
 - Added **size ratio cap (3:1)**: If one FVG is more than 3x the size of the other, they stay as separate zones. This prevents a tiny FVG + huge FVG from creating a disproportionate combined zone.
+
+**Re-implementation (2026-10-06) — Series of Gaps (strategy 7.1):**
+- Symptom (3m/1m charts): one move down with several sell FVGs produced two or three separate B BUY setups, one per FVG, firing before price closed above the top gap.
+- Rule: same-direction FVGs made by one unbroken run of displacement candles are one zone. An older active FVG joins the series while every candle between its 3-candle window and the chain is the move's color (dojis neutral; touching windows join directly). An opposite-color candle between them is a pause and starts a new series.
+- The setup fires only when a body closes through the whole series: one combined IFVG box, one entry, one grade, one alert. Sweep/BE/SL/PD use the combined zone; a series is never "singular".
+- A gap formed later inside an older zone (e.g. during a pullback) stays a standalone setup.
+- Root cause of partial series: "Max Active FVGs to Track" (default 3) evicted the top gaps of a series before price returned. FVG memory is now fixed at 50; the input is renamed "Max Active FVGs to Show" and only limits drawn boxes (same position, no reset needed).
+- Considered and rejected: whole-leg grouping (too strict), "pullback wick into the earlier gap ends the series" (split one push on small wicks), price-overlap grouping (user: nested gaps are standalone).
 
 ---
 

@@ -145,8 +145,8 @@ type DealingRange
 // ─────────────────────────────────────────────────────────────────────
 string GROUP_GENERAL = "═══ General Settings ═══"
 i_show_indicator    = input.bool(true, "Enable Indicator", group=GROUP_GENERAL)
-i_max_fvgs          = input.int(3, "Max Active FVGs to Track", minval=2, maxval=50, group=GROUP_GENERAL,
-                      tooltip="Maximum number of active (non-inverted) FVGs to keep in memory")
+i_max_fvgs          = input.int(3, "Max Active FVGs to Show", minval=2, maxval=50, group=GROUP_GENERAL,
+                      tooltip="Maximum number of active (non-inverted) FVG boxes drawn. Detection always remembers more, so a series of gaps is never cut short.")
 i_max_ifvgs         = input.int(10, "Max IFVGs to Track", minval=2, maxval=100, group=GROUP_GENERAL,
                       tooltip="Maximum number of IFVG setups to keep in memory. Independent of FVG limit.")
 i_max_recent_display = input.int(2, "Max Recent IFVGs to Show", minval=1, maxval=20, group=GROUP_GENERAL,
@@ -302,6 +302,7 @@ i_show_debug = input.bool(false, "Show Debug Panel", group=GROUP_DEBUG,
 // ══════════════════════════════════════════════════════════════════════
 
 // FVG Arrays (LTF - current timeframe)
+int FVG_MEMORY = 50  // active FVGs remembered for series/delivery checks (display limit is i_max_fvgs)
 var array<FVG> g_fvg_array = array.new<FVG>()
 var array<IFVG> g_ifvg_array = array.new<IFVG>()
 
@@ -437,8 +438,9 @@ grade_to_color(string grade) =>
 // ─────────────────────────────────────────────────────────────────────
 // Clean up arrays when they exceed limits
 // ─────────────────────────────────────────────────────────────────────
+// NOTE: memory is fixed (FVG_MEMORY); i_max_fvgs only limits how many boxes are drawn
 cleanup_fvg_array() =>
-    while array.size(g_fvg_array) > i_max_fvgs
+    while array.size(g_fvg_array) > FVG_MEMORY
         old_fvg = array.shift(g_fvg_array)
         if not na(old_fvg.box_id)
             box.delete(old_fvg.box_id)
@@ -1894,15 +1896,67 @@ check_inversions() =>
                             if (price_entered_zone or price_through_zone) and body_closes_above
                                 inverted := true
 
+                        // ═══════════════════════════════════════════════════════════
+                        // SERIES OF GAPS (strategy 7.1) - same-direction FVGs made by one
+                        // unbroken run of displacement candles are one zone. The setup fires
+                        // only when a body closes through ALL of them, as a single inversion.
+                        // RULE: an older active same-direction FVG joins while every candle
+                        // between its 3-candle window and the chain is a displacement candle
+                        // (same color as the move; touching windows join directly). An
+                        // opposite-color candle between them is a pause and ends the series.
+                        // A gap formed later inside an older zone stays a standalone setup.
+                        // ═══════════════════════════════════════════════════════════
+                        float s_top = fvg.top
+                        float s_bottom = fvg.bottom
+                        int s_start = fvg.start_bar
+                        int series_count = 1
+                        if inverted and i > 0
+                            bool chain_open = true
+                            for j = i - 1 to 0
+                                FVG other = array.get(g_fvg_array, j)
+                                bool candidate = (chain_open and other.status == "active" and other.is_bullish == fvg.is_bullish and other.start_bar < s_start)
+                                if candidate
+                                    // Candles between the two 3-candle windows must all be
+                                    // displacement candles (no opposite color; dojis are neutral)
+                                    bool opposite_between = false
+                                    int from_bar = other.end_bar + 1
+                                    int to_bar = s_start - 1
+                                    if to_bar >= from_bar
+                                        for k = from_bar to to_bar
+                                            int off = bar_index - k
+                                            if off >= 0 and off <= 499
+                                                if fvg.is_bullish
+                                                    if close[off] < open[off]
+                                                        opposite_between := true
+                                                else
+                                                    if close[off] > open[off]
+                                                        opposite_between := true
+                                    if opposite_between
+                                        chain_open := false
+                                    else
+                                        s_top := math.max(s_top, other.top)
+                                        s_bottom := math.min(s_bottom, other.bottom)
+                                        s_start := other.start_bar
+                                        series_count += 1
+                        if inverted
+                            inverted := fvg.is_bullish ? close < s_bottom : close > s_top
+                        float s_mid = (s_top + s_bottom) / 2
+
                         // Process Inversion with Phase 2 enhancements
                         if inverted
-                            fvg.status := "inverted"
-
-                            // Delete FVG drawings
-                            if not na(fvg.box_id)
-                                box.delete(fvg.box_id)
-                            if not na(fvg.label_id)
-                                label.delete(fvg.label_id)
+                            // Mark the whole series inverted and delete its FVG drawings
+                            // (members are removed from the array after the loop)
+                            for j = 0 to array.size(g_fvg_array) - 1
+                                FVG member = array.get(g_fvg_array, j)
+                                bool in_series = (j < i and member.status == "active" and member.is_bullish == fvg.is_bullish and member.start_bar >= s_start)
+                                if j == i or in_series
+                                    member.status := "inverted"
+                                    if not na(member.box_id)
+                                        box.delete(member.box_id)
+                                        member.box_id := na
+                                    if not na(member.label_id)
+                                        label.delete(member.label_id)
+                                        member.label_id := na
 
                             // IFVG direction is INVERTED
                             bool ifvg_is_bullish = not fvg.is_bullish
@@ -1914,18 +1968,18 @@ check_inversions() =>
                             float be_level = na
                             if ifvg_is_bullish
                                 // Bullish IFVG (long): BE is first swing HIGH to the left
-                                be_level := find_previous_swing_high(fvg.start_bar)
+                                be_level := find_previous_swing_high(s_start)
                                 if na(be_level)
-                                    be_level := fvg.top  // Fallback: use FVG top
+                                    be_level := s_top  // Fallback: use FVG top
                             else
                                 // Bearish IFVG (short): BE is first swing LOW to the left
-                                be_level := find_previous_swing_low(fvg.start_bar)
+                                be_level := find_previous_swing_low(s_start)
                                 if na(be_level)
-                                    be_level := fvg.bottom  // Fallback: use FVG bottom
+                                    be_level := s_bottom  // Fallback: use FVG bottom
 
                             // Final safety check - ensure BE is never na
                             if na(be_level)
-                                be_level := ifvg_is_bullish ? fvg.top : fvg.bottom
+                                be_level := ifvg_is_bullish ? s_top : s_bottom
 
                             // ═══════════════════════════════════════════════════════════
                             // SL LEVEL - Stop Loss placement (user configurable)
@@ -1935,7 +1989,7 @@ check_inversions() =>
                             //           live ITL/ITH, then the FVG edge.
                             // Option 2: FVG Boundary (bottom for bullish, top for bearish)
                             // ═══════════════════════════════════════════════════════════
-                            float fvg_edge = ifvg_is_bullish ? fvg.bottom : fvg.top
+                            float fvg_edge = ifvg_is_bullish ? s_bottom : s_top
                             float sl_level = fvg_edge
                             string sl_type_used = "fvg_boundary"
                             if i_sl_type == "Strong High/Low"
@@ -1950,7 +2004,7 @@ check_inversions() =>
 
                             // Final safety check - ensure SL is never na
                             if na(sl_level)
-                                sl_level := ifvg_is_bullish ? fvg.bottom : fvg.top
+                                sl_level := ifvg_is_bullish ? s_bottom : s_top
 
                             // ═══════════════════════════════════════════════════════════
                             // ENTRY VALIDITY - Check if SL has been hit
@@ -1967,12 +2021,12 @@ check_inversions() =>
                             Liquidity dol = find_dol(ifvg_is_bullish, close)
 
                             // Check for a sweep inside this setup's move (FVG formation → inversion)
-                            bool has_sweep = check_setup_sweep(not ifvg_is_bullish, fvg.start_bar)
+                            bool has_sweep = check_setup_sweep(not ifvg_is_bullish, s_start)
 
                             // Check delivery from prior FVG (per D-01)
                             // Delivery window starts at the swing the move into the setup came from
                             // (long: swing high before the FVG; short: swing low), else 499 bars back
-                            int leg_start = find_swing_bar_before(ifvg_is_bullish ? g_swing_highs : g_swing_lows, fvg.start_bar)
+                            int leg_start = find_swing_bar_before(ifvg_is_bullish ? g_swing_highs : g_swing_lows, s_start)
                             int delivery_start = na(leg_start) ? bar_index - 499 : leg_start
                             bool has_delivery = check_delivery_from_fvg(ifvg_is_bullish, delivery_start)
 
@@ -1982,18 +2036,18 @@ check_inversions() =>
                             string momentum_str = momentum_score == 2 ? "strong_no_chop" : (momentum_score == 0 ? "weak_or_choppy" : "neutral")
 
                             // Calculate grade (checklist scoring per D-05, D-06, D-07)
-                            bool fvg_singular = is_fvg_singular(fvg)
-                            float gap_size = fvg.top - fvg.bottom
+                            bool fvg_singular = series_count == 1 and is_fvg_singular(fvg)
+                            float gap_size = s_top - s_bottom
                             int singular_score = score_singularity(fvg_singular, gap_size, atr_value)
-                            string ifvg_pd_zone = compute_pd_zone(fvg.mid)
+                            string ifvg_pd_zone = compute_pd_zone(s_mid)
                             string grade = calculate_grade(has_sweep, has_delivery, momentum_score, dol, singular_score, ifvg_pd_zone, ifvg_is_bullish)
 
                             // Create IFVG
                             new_ifvg = IFVG.new(
-                                top = fvg.top,
-                                bottom = fvg.bottom,
-                                mid = fvg.mid,
-                                start_bar = fvg.start_bar,
+                                top = s_top,
+                                bottom = s_bottom,
+                                mid = s_mid,
+                                start_bar = s_start,
                                 inversion_bar = bar_index,
                                 inversion_close = close,
                                 is_bullish = ifvg_is_bullish,
@@ -2021,7 +2075,11 @@ check_inversions() =>
                             )
 
                             array.push(g_ifvg_array, new_ifvg)
-                            array.remove(g_fvg_array, i)
+        // Remove every FVG inverted on this bar (series members included)
+        if array.size(g_fvg_array) > 0
+            for r = array.size(g_fvg_array) - 1 to 0
+                if array.get(g_fvg_array, r).status == "inverted"
+                    array.remove(g_fvg_array, r)
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 9: BE STATUS & MITIGATION DETECTION
@@ -2260,17 +2318,20 @@ render_dealing_range(DealingRange r) =>
 // ─────────────────────────────────────────────────────────────────────
 render_fvg_boxes() =>
     int fvg_size = array.size(g_fvg_array)
+    int shown = 0
     if i_show_active_fvg and fvg_size > 0
-        for i = 0 to fvg_size - 1
+        // Newest first: only the newest i_max_fvgs active FVGs are drawn
+        for i = fvg_size - 1 to 0
             if i < fvg_size
                 fvg = array.get(g_fvg_array, i)
-
-                if fvg.status == "active"
-                    if not na(fvg.box_id)
-                        box.delete(fvg.box_id)
-                    if not na(fvg.label_id)
-                        label.delete(fvg.label_id)
-
+                if not na(fvg.box_id)
+                    box.delete(fvg.box_id)
+                    fvg.box_id := na
+                if not na(fvg.label_id)
+                    label.delete(fvg.label_id)
+                    fvg.label_id := na
+                if fvg.status == "active" and shown < i_max_fvgs
+                    shown += 1
                     bg_color = get_fvg_color(fvg.is_bullish)
                     border_color = get_border_color(fvg.is_bullish)
                     border_style = get_border_style(i_fvg_border_style)
