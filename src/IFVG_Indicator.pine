@@ -1594,54 +1594,37 @@ check_setup_sweep(bool looking_for_bsl, int window_start) =>
     result
 
 // ─────────────────────────────────────────────────────────────────────
-// Assess momentum quality of the inversion candle (per D-08)
-// Returns int: 0 = weak/choppy, 1 = moderate, 2 = strong displacement
-// Score 2 requires BOTH strong inversion AND strong displacement
-// Score 1 requires EITHER strong signal OR moderate candle metrics
-// NOTE: Parameters must be current-bar open/high/low/close only.
-// The function uses series offsets close[k], open[k], high[k], low[k]
-// relative to the current bar for displacement analysis. Passing saved
-// OHLC values from a different bar will NOT change the series lookback.
+// Assess momentum through the IFVG (per D-08, strategy 6: "no chop through the IFVG")
+// Returns int: 0 = weak/choppy, 1 = moderate, 2 = strong with no chop
+// Chop = candles spent at the zone before the body closes through it: counted from
+// the first candle (after the setup's extreme) that touched the zone up to the
+// inversion candle. No lookback setting: the window is the setup's own move.
+// RULE 1: Score 0 if the inversion candle is weak (body < 30% of range or range < 0.5 ATR)
+//         or price chopped at the zone for 4+ candles.
+// RULE 2: Score 2 if the inversion candle is strong (body > 70%, range > 1 ATR) and it
+//         closed through within 1 candle of first touching the zone.
+// RULE 3: Otherwise score 1.
+// NOTE: Uses series offsets relative to the current (inversion) bar.
 // ─────────────────────────────────────────────────────────────────────
-assess_momentum(float inv_open, float inv_high, float inv_low, float inv_close) =>
-    int result = 0
-    candle_body = math.abs(inv_close - inv_open)
-    candle_range = inv_high - inv_low
+assess_momentum(bool is_bull, float zone_top, float zone_bottom, int extreme_off) =>
+    int result = 1
+    float candle_body = math.abs(close - open)
+    float candle_range = high - low
     if candle_range > 0 and not na(atr_value)
-        body_ratio = candle_body / candle_range
-        bool inv_bullish = inv_close > inv_open
-        // Count displacement candles (same-direction, body > 50%) in preceding 5 bars
-        int displacement_candles = 0
-        float leg_range = 0.0
-        int leg_size = 5
-        for k = 1 to leg_size
-            float cb = math.abs(close[k] - open[k])
-            float cr = high[k] - low[k]
-            if cr > 0
-                float br = cb / cr
-                bool same_dir = inv_bullish ? close[k] > open[k] : close[k] < open[k]
-                if same_dir and br > 0.5
-                    displacement_candles += 1
-        if inv_bullish
-            leg_range := inv_high - low[leg_size]
-        else
-            leg_range := high[leg_size] - inv_low
-        bool strong_inversion = body_ratio > 0.7 and candle_range > atr_value
-        bool strong_displacement = displacement_candles >= 2 and leg_range > atr_value * 1.5
-        // D-08 scoring:
-        // Score 2: BOTH strong inversion AND strong displacement
-        if strong_inversion and strong_displacement
-            result := 2
-        // Score 1: EITHER strong inversion OR displacement (not both)
-        //          OR moderate candle (body > 50% AND range > 0.7x ATR)
-        else if strong_inversion or strong_displacement
-            result := 1
-        else if body_ratio > 0.5 and candle_range > atr_value * 0.7
-            result := 1
-        // Score 0: weak/choppy (body < 30% OR range < 0.5x ATR)
-        else if body_ratio < 0.3 or candle_range < atr_value * 0.5
+        float body_ratio = candle_body / candle_range
+        bool strong_candle = body_ratio > 0.7 and candle_range > atr_value
+        bool weak_candle = body_ratio < 0.3 or candle_range < atr_value * 0.5
+        int chop = 0
+        if extreme_off > 0
+            for k = extreme_off to 1
+                if chop == 0
+                    bool touched = is_bull ? high[k] >= zone_bottom : low[k] <= zone_top
+                    if touched
+                        chop := k
+        if weak_candle or chop >= 4
             result := 0
-        // else stays 0 (default)
+        else if strong_candle and chop <= 1
+            result := 2
     result
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1971,18 +1954,24 @@ check_inversions() =>
                             //           (they can sit far from the setup).
                             // Option 2: FVG Boundary (bottom for bullish, top for bearish)
                             // ═══════════════════════════════════════════════════════════
+                            // Setup extreme: lowest low (longs) / highest high (shorts) from the
+                            // first FVG of the zone to the inversion candle, and its bar offset
+                            int span = int(math.min(bar_index - s_start, 499))
+                            float setup_extreme = ifvg_is_bullish ? low : high
+                            int extreme_off = 0
+                            if span > 0
+                                for k = 1 to span
+                                    bool more_extreme = ifvg_is_bullish ? low[k] < setup_extreme : high[k] > setup_extreme
+                                    if more_extreme
+                                        setup_extreme := ifvg_is_bullish ? low[k] : high[k]
+                                        extreme_off := k
                             float fvg_edge = ifvg_is_bullish ? s_bottom : s_top
                             float sl_level = fvg_edge
                             string sl_type_used = "fvg_boundary"
                             if i_sl_type == "Strong High/Low"
-                                int span = int(math.min(bar_index - s_start, 499))
-                                float extreme = ifvg_is_bullish ? low : high
-                                if span > 0
-                                    for k = 1 to span
-                                        extreme := ifvg_is_bullish ? math.min(extreme, low[k]) : math.max(extreme, high[k])
-                                bool beyond = ifvg_is_bullish ? extreme < fvg_edge : extreme > fvg_edge
+                                bool beyond = ifvg_is_bullish ? setup_extreme < fvg_edge : setup_extreme > fvg_edge
                                 if beyond
-                                    sl_level := extreme
+                                    sl_level := setup_extreme
                                     sl_type_used := "strong"
 
                             // Final safety check - ensure SL is never na
@@ -2017,7 +2006,7 @@ check_inversions() =>
                             bool has_delivery = check_delivery_from_fvg(ifvg_is_bullish, delivery_start)
 
                             // Assess momentum (returns int 0-2 per D-08)
-                            int momentum_score = assess_momentum(open, high, low, close)
+                            int momentum_score = assess_momentum(ifvg_is_bullish, s_top, s_bottom, extreme_off)
                             // Map int score to string for backward compatibility (until Plan 03 rewrites rendering)
                             string momentum_str = momentum_score == 2 ? "strong_no_chop" : (momentum_score == 0 ? "weak_or_choppy" : "neutral")
 

@@ -100,7 +100,7 @@ The window is therefore set by the setup itself (3 candles on a fast M1 setup, 4
 
 ## Issue 5: Momentum Assessment Only Analyzed Single Inversion Candle
 
-**Status:** Partially fixed — reverted by `732356d`, re-implemented in Phase 5 (`cde420d`); no chop penalty yet
+**Status:** Resolved (2026-10-06, verified on TradingView) — chop through the IFVG now scored
 **Commits:** `404f307`
 **Affected Code:** `assess_momentum()` (Section 7)
 
@@ -114,6 +114,11 @@ The window is therefore set by the setup itself (3 candles on a fast M1 setup, 4
   - Measures the total leg range from the 5th candle back to the inversion candle
 - Combined assessment: "strong_no_chop" if either the inversion candle is strong OR the displacement leg has 2+ directional candles with leg range > 1.5x ATR.
 - "weak_or_choppy" only when the inversion candle itself is weak (body < 30% of range or range < 0.5 ATR).
+
+**Re-implementation (2026-10-06) — chop through the IFVG (strategy 6):**
+- Chop = candles from the first touch of the zone (after the setup's own high/low) to the inversion candle. No lookback setting; the window is the setup's move. Series zones use the combined zone.
+- Score 0: weak inversion candle (body < 30% or range < 0.5 ATR) or 4+ chop candles. Score 2: strong inversion candle (body > 70%, range > 1 ATR) closing through within 1 candle of first touch. Otherwise 1.
+- The fixed 5-bar displacement lookback is removed.
 
 ---
 

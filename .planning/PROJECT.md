@@ -89,6 +89,7 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 | Series of Gaps: chain same-direction FVGs while candles between are the move's color; fire once on a close through all (2026-10-06) | Strategy 7.1; separate setups per gap fired too early | ✓ Good |
 | FVG memory fixed at 50; "Max Active FVGs" only limits drawn boxes | A cap of 3 evicted the top gaps of a series | ✓ Good |
 | SL at the setup's own high/low (first FVG → inversion), replacing "most recent Strong level" (2026-10-06) | Setup's swing isn't Strong yet at entry, so older far-away Strong levels were picked | ✓ Good |
+| Momentum scored by chop through the IFVG (candles from first zone touch to inversion), no fixed lookback (2026-10-06) | Strategy grades "no chop through the IFVG"; old check looked at a fixed 5 bars | ✓ Good |
 | barstate.isconfirmed only | Prevents repainting — critical for trading decisions | ✓ Good |
 | HTF swing-based PD zones over daily range | More accurate ICT dealing range concept | — Pending |
 | Hybrid grading (tier + quality score) | Separates mandatory criteria from quality modifiers | ✓ Good |
