@@ -252,3 +252,21 @@ Two FVGs at completely different price levels got merged just because they were 
 - Verified: about 60% of *live* levels are strong (weak pullback levels are usually mitigated quickly, so the live set leans strong); 1 undecided level per chart.
 
 **Known cosmetic issue:** labels overlap when a level sits at nearly the same price as a setup line (e.g. "Strong Low" over "B BUY").
+
+---
+
+## Issue 14: No Swings Detected (Liquidity 0) Without Debug Code
+
+**Status:** Resolved (2026-10-06, verified on TradingView, several symbols)
+**Affected Code:** swing detection (now inline in Section 12, Step 1), `create_internal_levels()` (Section 6), swing globals (Section 3)
+
+**Symptom:** After the Strong High/Low change, the dashboard showed Liquidity 0 and no ITH/ITL/EQH/EQL on any symbol or timeframe. Builds with debug counters *inside* `detect_swing_points()` worked (1,339 confirmed highs); every build without them, including one that only read the swing arrays from outside, gave 0 swings.
+
+**Cause:** TradingView skipped the body of `detect_swing_points()` (a function whose body was a single `if` and whose result was unused). The swing rules themselves were correct. A first attempt (moving the `high[1]`/`high[2]` checks to global scope and passing them in) did not help.
+
+**Solution:**
+- Swing detection runs inline in the main loop (Step 1); there is no `detect_swing_points()` function any more.
+- Candidate checks (`swing_ready`, `swing_cand_high`, `swing_cand_low`) are computed at global scope on every bar.
+- Strong High/Low at creation no longer scans `close[k]` up to 499 bars back. Each pending swing tracks `far_close` (lowest close since a swing high, highest since a swing low) and the check uses that. Same result, no long history lookback.
+
+**Rule for future changes:** don't wrap code that only mutates `var` arrays in a function whose result is unused. If detection silently produces nothing, check the dashboard Liquidity count first.

@@ -62,6 +62,7 @@ type SwingPoint
     bool is_high        // true = swing high, false = swing low
     bool is_internal    // true = internal structure, false = external
     bool is_valid       // Still valid (not broken)
+    float far_close = na  // Lowest close since a swing high / highest since a swing low (tracked while pending)
 
 // Type: Liquidity - All liquidity types (Enhanced for proper EQL/EQH)
 type Liquidity
@@ -336,6 +337,11 @@ var int               g_prev_pd_bar   = na
 
 // ATR for sizing
 atr_value = ta.atr(i_fvg_atr_period)
+
+// Swing inputs, evaluated on every bar at global scope (history references kept out of functions)
+bool swing_ready = barstate.isconfirmed and bar_index >= 2 and not na(atr_value)
+bool swing_cand_high = high[1] > high[2] and high[1] >= high
+bool swing_cand_low = low[1] < low[2] and low[1] <= low
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 4: UTILITY FUNCTIONS
@@ -966,48 +972,8 @@ check_htf_mitigations(array<IFVG> ifvg_arr, float htf_c) =>
 // NOTE: Equal highs/lows don't cancel each other, so double tops/bottoms give
 //       two swings and the EQH/EQL logic pairs them.
 // ─────────────────────────────────────────────────────────────────────
-detect_swing_points() =>
-    if barstate.isconfirmed and bar_index >= 2 and not na(atr_value)
-        float confirm_dist = atr_value * SWING_CONFIRM_ATR
-        // RULE 1: new candidates at [1]
-        if high[1] > high[2] and high[1] >= high
-            array.push(g_pending_highs, SwingPoint.new(price = high[1], bar_idx = bar_index - 1, is_high = true, is_internal = false, is_valid = true))
-            if array.size(g_pending_highs) > SWING_PENDING_MAX
-                array.shift(g_pending_highs)
-        if low[1] < low[2] and low[1] <= low
-            array.push(g_pending_lows, SwingPoint.new(price = low[1], bar_idx = bar_index - 1, is_high = false, is_internal = false, is_valid = true))
-            if array.size(g_pending_lows) > SWING_PENDING_MAX
-                array.shift(g_pending_lows)
-        // RULE 2/3: resolve pending highs (oldest first keeps g_swing_highs in bar order)
-        int ih = 0
-        while ih < array.size(g_pending_highs)
-            SwingPoint cand = array.get(g_pending_highs, ih)
-            bool resolved = false
-            if high > cand.price
-                resolved := true
-            else if close <= cand.price - confirm_dist
-                array.push(g_swing_highs, cand)
-                if array.size(g_swing_highs) > SWING_MEMORY_MAX
-                    array.shift(g_swing_highs)
-                resolved := true
-            if resolved
-                array.remove(g_pending_highs, ih)
-            ih := resolved ? ih : ih + 1
-        // RULE 2/3: resolve pending lows
-        int il = 0
-        while il < array.size(g_pending_lows)
-            SwingPoint cand = array.get(g_pending_lows, il)
-            bool resolved = false
-            if low < cand.price
-                resolved := true
-            else if close >= cand.price + confirm_dist
-                array.push(g_swing_lows, cand)
-                if array.size(g_swing_lows) > SWING_MEMORY_MAX
-                    array.shift(g_swing_lows)
-                resolved := true
-            if resolved
-                array.remove(g_pending_lows, il)
-            il := resolved ? il : il + 1
+// NOTE: Runs inline in the main loop (Step 1), not as a function. Wrapped in a function,
+//       TradingView skipped its body on some builds (0 swings, no ITH/ITL/EQH/EQL).
 
 // ─────────────────────────────────────────────────────────────────────
 // Check for Equal Highs (EQH) - REDESIGNED
@@ -1222,7 +1188,8 @@ create_internal_levels() =>
     // Turn every newly confirmed swing into an ITH/ITL. Several swings can confirm
     // on the same candle, so walk all swings newer than the last one used.
     // Strong/weak: structure_ref is the opposite swing the move came from; if a close
-    // already broke it between the swing candle and now, the level is Strong at once.
+    // already broke it between the swing candle and now (far_close, tracked while the
+    // swing was pending), the level is Strong at once.
     // NOTE: i_show_ith_itl is handled in render_liquidity_lines()
     // Data must always be collected for grading algorithms to work
     int swing_high_size = array.size(g_swing_highs)
@@ -1233,12 +1200,7 @@ create_internal_levels() =>
             if sh.bar_idx > array.get(g_last_internal_bar, 0)
                 array.set(g_last_internal_bar, 0, sh.bar_idx)
                 float ref_low = find_swing_before(g_swing_lows, sh.bar_idx)
-                bool strong_h = false
-                if not na(ref_low)
-                    int span_h = int(math.min(bar_index - sh.bar_idx, 499))
-                    for k = 0 to span_h
-                        if close[k] < ref_low
-                            strong_h := true
+                bool strong_h = not na(ref_low) and sh.far_close < ref_low
                 array.push(g_liquidity_array, Liquidity.new(level = sh.price, original_level = sh.price, liq_type = "ITH", quality = "na", bar_idx = sh.bar_idx, last_touch_bar = sh.bar_idx, touch_count = 1, is_swept = false, swept_bar = 0, is_valid = true, line_id = na, label_id = na, is_strong = strong_h, is_decided = strong_h or na(ref_low), structure_ref = ref_low))
     int swing_low_size = array.size(g_swing_lows)
     if swing_low_size > 0
@@ -1247,12 +1209,7 @@ create_internal_levels() =>
             if sl.bar_idx > array.get(g_last_internal_bar, 1)
                 array.set(g_last_internal_bar, 1, sl.bar_idx)
                 float ref_high = find_swing_before(g_swing_highs, sl.bar_idx)
-                bool strong_l = false
-                if not na(ref_high)
-                    int span_l = int(math.min(bar_index - sl.bar_idx, 499))
-                    for k = 0 to span_l
-                        if close[k] > ref_high
-                            strong_l := true
+                bool strong_l = not na(ref_high) and sl.far_close > ref_high
                 array.push(g_liquidity_array, Liquidity.new(level = sl.price, original_level = sl.price, liq_type = "ITL", quality = "na", bar_idx = sl.bar_idx, last_touch_bar = sl.bar_idx, touch_count = 1, is_swept = false, swept_bar = 0, is_valid = true, line_id = na, label_id = na, is_strong = strong_l, is_decided = strong_l or na(ref_high), structure_ref = ref_high))
 
 // ─────────────────────────────────────────────────────────────────────
@@ -2889,7 +2846,49 @@ if i_show_indicator
     // ─────────────────────────────────────────────────────────────────
     // Step 1: Detect swing points for liquidity
     // ─────────────────────────────────────────────────────────────────
-    detect_swing_points()
+    if swing_ready
+        float confirm_dist = atr_value * SWING_CONFIRM_ATR
+        // RULE 1: new candidates at [1]
+        if swing_cand_high
+            array.push(g_pending_highs, SwingPoint.new(price = high[1], bar_idx = bar_index - 1, is_high = true, is_internal = false, is_valid = true, far_close = close[1]))
+            if array.size(g_pending_highs) > SWING_PENDING_MAX
+                array.shift(g_pending_highs)
+        if swing_cand_low
+            array.push(g_pending_lows, SwingPoint.new(price = low[1], bar_idx = bar_index - 1, is_high = false, is_internal = false, is_valid = true, far_close = close[1]))
+            if array.size(g_pending_lows) > SWING_PENDING_MAX
+                array.shift(g_pending_lows)
+        // RULE 2/3: resolve pending highs (oldest first keeps g_swing_highs in bar order)
+        int ih = 0
+        while ih < array.size(g_pending_highs)
+            SwingPoint cand = array.get(g_pending_highs, ih)
+            cand.far_close := math.min(cand.far_close, close)
+            bool resolved = false
+            if high > cand.price
+                resolved := true
+            else if close <= cand.price - confirm_dist
+                array.push(g_swing_highs, cand)
+                if array.size(g_swing_highs) > SWING_MEMORY_MAX
+                    array.shift(g_swing_highs)
+                resolved := true
+            if resolved
+                array.remove(g_pending_highs, ih)
+            ih := resolved ? ih : ih + 1
+        // RULE 2/3: resolve pending lows
+        int il = 0
+        while il < array.size(g_pending_lows)
+            SwingPoint cand = array.get(g_pending_lows, il)
+            cand.far_close := math.max(cand.far_close, close)
+            bool resolved = false
+            if low < cand.price
+                resolved := true
+            else if close >= cand.price + confirm_dist
+                array.push(g_swing_lows, cand)
+                if array.size(g_swing_lows) > SWING_MEMORY_MAX
+                    array.shift(g_swing_lows)
+                resolved := true
+            if resolved
+                array.remove(g_pending_lows, il)
+            il := resolved ? il : il + 1
     // ─────────────────────────────────────────────────────────────────
     // Step 2: Check for EQH/EQL formations
     // ─────────────────────────────────────────────────────────────────
