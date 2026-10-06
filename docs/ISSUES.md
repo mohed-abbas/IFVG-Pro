@@ -28,7 +28,7 @@ The PD dealing range now uses its own `g_pd_liquidity_array` (`select_dealing_ra
 
 ## Issue 2: SL Placed at Wrong Swing Point Instead of Nearest ITH/ITL
 
-**Status:** Regressed — fix reverted by `732356d`
+**Status:** Resolved (2026-10-06, verified on TradingView) — re-implemented after the `732356d` regression
 **Commits:** `257efaf`
 **Affected Code:** `check_inversions()` (Section 8), new `find_previous_itl()` / `find_previous_ith()`
 
@@ -44,6 +44,13 @@ The PD dealing range now uses its own `g_pd_liquidity_array` (`select_dealing_ra
 - Added `find_previous_itl(before_bar, below_price)` and `find_previous_ith(before_bar, above_price)` that search `g_liquidity_array` for ITH/ITL levels, filtering by both time (before inversion) and price direction (below for bullish SL, above for bearish SL).
 - Fallback now searches `g_swing_lows`/`g_swing_highs` (50 entries) with the same price filter, instead of blindly returning the most recent swing.
 - Changed call site from `fvg.start_bar` to `bar_index` so ITLs formed after the FVG but before the inversion are included.
+
+**Re-implementation (2026-10-06, after the swing/Strong High-Low rework):**
+- Decision: SL at the most recent **Strong** High/Low (wider, structure-protected), not any ITH/ITL.
+- `find_structure_stop(is_low, beyond_price, before_bar, strong_only)`: most recent live (not swept/broken) ITL below the zone for longs / ITH above it for shorts, formed before the inversion bar.
+- Fallback: most recent live ITL/ITH → FVG edge.
+- "Stop Loss Type" input: "Strong High/Low" (new default) or "FVG Boundary"; "Swing Stop" removed (input count unchanged, no settings shift).
+- `sl_type`: "strong", "internal" or "fvg_boundary". BE levels unchanged.
 
 ---
 

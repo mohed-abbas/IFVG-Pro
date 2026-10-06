@@ -83,6 +83,7 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 | Swings = ICT 3-candle candidate confirmed by a 1-ATR close away (no lookback input) | Adapts to volatility, fast confirmation, keeps double tops | ✓ Good |
 | Strong High/Low = level whose leg broke structure before a newer swing formed; drawn separately from weak levels | Most important levels were hidden behind nearer pullback levels; ATR-distance 'major' made 98% major | ✓ Good |
 | Swing detection runs inline in the main loop, not in a function | TradingView skipped the function body on some builds (0 swings, Liquidity 0) | ✓ Good |
+| SL at most recent live Strong High/Low beyond the zone (fallback ITH/ITL, then FVG edge); default SL type | Wider, structure-protected stop; old SL used raw swings before FVG formation | ✓ Good |
 | barstate.isconfirmed only | Prevents repainting — critical for trading decisions | ✓ Good |
 | HTF swing-based PD zones over daily range | More accurate ICT dealing range concept | — Pending |
 | Hybrid grading (tier + quality score) | Separates mandatory criteria from quality modifiers | ✓ Good |
