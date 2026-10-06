@@ -215,7 +215,7 @@ Two FVGs at completely different price levels got merged just because they were 
 
 ## Issue 11: Multi-Candle Raids Not Credited as Sweeps
 
-**Status:** Open — deferred (test first, then decide); revisit after the swing rework and before the grading remodel (#8)
+**Status:** Fix applied 2026-10-06 — pending live verification on TradingView (user testing in real time)
 **Affected Code:** `check_setup_sweep()` (Section 7)
 **Details:** `.planning/todos/pending/multi-candle-sweep-rule.md`
 
@@ -223,9 +223,16 @@ Two FVGs at completely different price levels got merged just because they were 
 
 **Suspected Cause:** Rule 2 requires the first candle that swept the level to be the extreme of the move. In a multi-candle raid, an earlier candle sweeps the level and a later one makes the top, so the sweep is rejected.
 
-**Proposed Fix (not applied):** count the sweep if the level was swept inside the window, the move's extreme is at or after the sweep, and no candle closed beyond the level between the sweep and the inversion.
+**Proposed Fix (applied 2026-10-06, see below):** count the sweep if the level was swept inside the window, the move's extreme is at or after the sweep, and no candle closed beyond the level between the sweep and the inversion.
 
 **Why deferred:** the current rule fails safe (under-credits, never invents sweeps); the swing rework changes the ITH/ITL set; more examples are needed before changing a grading input.
+
+**Applied (2026-10-06), `check_setup_sweep()`:**
+- RULE 1 (unchanged): sweep inside the setup's move (FVG formation → inversion candle).
+- RULE 2 (new): the move's extreme is on the sweep candle or after it, so a raid where one candle sweeps the level and a later one makes the top/bottom counts.
+- RULE 3 (new): no candle closed beyond the level from the sweep to the inversion (raid failed). Blocks early minor levels the move kept closing through.
+- Not changed: a candle that closes beyond the level and comes back is still "broken", not a sweep (wicks only).
+- To verify live: multi-candle raids should now show the sweep in the tooltip; watch for sweeps credited where there was none.
 
 ---
 

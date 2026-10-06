@@ -40,3 +40,7 @@ A sweep counts for the setup if:
 
 - Missed real sweeps (multi-candle raids) — screenshot + label state.
 - Cases where the proposed rule would add a sweep that did not cause the turn.
+
+## Status (2026-10-06)
+
+Fix applied in `check_setup_sweep()` (Rules 2 and 3 as proposed). Awaiting live verification; see docs/ISSUES.md Issue 11.
