@@ -98,7 +98,7 @@ type IFVG
     float be_level      // Break-even level (first swing target to the LEFT)
     string be_status    // "intact", "taken"
     float sl_level      // Stop loss level (swing or FVG boundary)
-    string sl_type      // "strong", "internal" or "fvg_boundary"
+    string sl_type      // "strong" (setup's own high/low) or "fvg_boundary"
     Liquidity dol       // Draw on Liquidity (target)
     bool has_sweep      // Liquidity sweep present
     string momentum     // "strong_no_chop", "neutral", "weak_or_choppy"
@@ -243,7 +243,7 @@ i_show_sl_level     = input.bool(true, "Show SL Levels", group=GROUP_GRADE,
                       tooltip="Display Stop Loss level lines")
 i_sl_type           = input.string("Strong High/Low", "Stop Loss Type",
                       options=["Strong High/Low", "FVG Boundary"], group=GROUP_GRADE,
-                      tooltip="Strong High/Low: SL at the most recent live Strong Low (longs) / Strong High (shorts) beyond the setup; falls back to the most recent ITL/ITH, then the FVG edge. FVG Boundary: SL at the FVG edge")
+                      tooltip="Strong High/Low: SL at the setup's own low (longs) / high (shorts) - the extreme from the FVG formation to the inversion candle, which becomes the Strong Low/High once structure breaks. FVG Boundary: SL at the FVG edge")
 i_show_grade_label  = input.bool(true, "Show Grade on Label", group=GROUP_GRADE,
                       tooltip="Include grade in IFVG label")
 
@@ -1527,26 +1527,6 @@ find_swing_bar_before(array<SwingPoint> swings, int before_bar) =>
     result
 
 // ─────────────────────────────────────────────────────────────────────
-// Find the stop-loss structure level for a setup
-// RULE 1: Longs use an ITL below `beyond_price`; shorts an ITH above it.
-// RULE 2: Level must be live (not swept or broken) and formed before `before_bar`.
-// RULE 3: Most recent one wins (by swing bar). strong_only = Strong High/Low only.
-// Returns na if none.
-// ─────────────────────────────────────────────────────────────────────
-find_structure_stop(bool is_low, float beyond_price, int before_bar, bool strong_only) =>
-    float result = na
-    int best_bar = -1
-    for lq in g_liquidity_array
-        bool type_ok = is_low ? lq.liq_type == "ITL" : lq.liq_type == "ITH"
-        bool side_ok = is_low ? lq.level < beyond_price : lq.level > beyond_price
-        bool live = lq.is_valid and not lq.is_swept
-        if type_ok and side_ok and live and (lq.is_strong or not strong_only)
-            if lq.bar_idx < before_bar and lq.bar_idx > best_bar
-                result := lq.level
-                best_bar := lq.bar_idx
-    result
-
-// ─────────────────────────────────────────────────────────────────────
 // Find nearest Draw on Liquidity (target)
 // For bullish IFVG: find BSL (highs above)
 // For bearish IFVG: find SSL (lows below)
@@ -1983,24 +1963,27 @@ check_inversions() =>
 
                             // ═══════════════════════════════════════════════════════════
                             // SL LEVEL - Stop Loss placement (user configurable)
-                            // Option 1: Strong High/Low (default) - most recent live Strong Low
-                            //           below the zone (longs) / Strong High above it (shorts),
-                            //           formed before the inversion. Fallback: most recent
-                            //           live ITL/ITH, then the FVG edge.
+                            // Option 1: Strong High/Low (default) - the setup's own extreme: lowest
+                            //           low (longs) / highest high (shorts) from the first FVG of
+                            //           the zone to the inversion candle. This is the swing the
+                            //           reversal came from, which becomes the Strong Low/High once
+                            //           the move breaks structure. Older Strong levels are not used
+                            //           (they can sit far from the setup).
                             // Option 2: FVG Boundary (bottom for bullish, top for bearish)
                             // ═══════════════════════════════════════════════════════════
                             float fvg_edge = ifvg_is_bullish ? s_bottom : s_top
                             float sl_level = fvg_edge
                             string sl_type_used = "fvg_boundary"
                             if i_sl_type == "Strong High/Low"
-                                float strong_stop = find_structure_stop(ifvg_is_bullish, fvg_edge, bar_index, true)
-                                float internal_stop = find_structure_stop(ifvg_is_bullish, fvg_edge, bar_index, false)
-                                if not na(strong_stop)
-                                    sl_level := strong_stop
+                                int span = int(math.min(bar_index - s_start, 499))
+                                float extreme = ifvg_is_bullish ? low : high
+                                if span > 0
+                                    for k = 1 to span
+                                        extreme := ifvg_is_bullish ? math.min(extreme, low[k]) : math.max(extreme, high[k])
+                                bool beyond = ifvg_is_bullish ? extreme < fvg_edge : extreme > fvg_edge
+                                if beyond
+                                    sl_level := extreme
                                     sl_type_used := "strong"
-                                else if not na(internal_stop)
-                                    sl_level := internal_stop
-                                    sl_type_used := "internal"
 
                             // Final safety check - ensure SL is never na
                             if na(sl_level)
@@ -2009,13 +1992,16 @@ check_inversions() =>
                             // ═══════════════════════════════════════════════════════════
                             // ENTRY VALIDITY - Check if SL has been hit
                             // ═══════════════════════════════════════════════════════════
+                            // NOTE: a "strong" SL is built from this candle's range, so it is
+                            // never hit on the inversion candle itself
                             bool entry_valid = true
-                            if ifvg_is_bullish
-                                // Bullish: Invalid if price went BELOW SL level
-                                entry_valid := low > sl_level
-                            else
-                                // Bearish: Invalid if price went ABOVE SL level
-                                entry_valid := high < sl_level
+                            if sl_type_used != "strong"
+                                if ifvg_is_bullish
+                                    // Bullish: Invalid if price went BELOW SL level
+                                    entry_valid := low > sl_level
+                                else
+                                    // Bearish: Invalid if price went ABOVE SL level
+                                    entry_valid := high < sl_level
 
                             // Find DOL (target)
                             Liquidity dol = find_dol(ifvg_is_bullish, close)
@@ -2109,8 +2095,9 @@ update_be_status() =>
                             if low <= ifvg.be_level
                                 ifvg.be_status := "taken"
 
-                    // Check if SL has been hit (invalidates entry)
-                    if ifvg.entry_valid
+                    // Check if SL has been hit (invalidates entry); the inversion candle
+                    // was already checked at creation
+                    if ifvg.entry_valid and bar_index > ifvg.inversion_bar
                         if ifvg.is_bullish
                             // Bullish: Invalid if price touched or went BELOW SL level (matches creation check)
                             if low <= ifvg.sl_level

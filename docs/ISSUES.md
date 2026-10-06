@@ -52,6 +52,11 @@ The PD dealing range now uses its own `g_pd_liquidity_array` (`select_dealing_ra
 - "Stop Loss Type" input: "Strong High/Low" (new default) or "FVG Boundary"; "Swing Stop" removed (input count unchanged, no settings shift).
 - `sl_type`: "strong", "internal" or "fvg_boundary". BE levels unchanged.
 
+**Revision (2026-10-06, verified on TradingView):**
+- Symptom: about 1 in 3 setups put the SL far away (e.g. an old Strong High near the top of the chart). The setup's own high/low is usually not Strong yet at inversion, because structure breaks after the entry, so the search skipped it.
+- Rule now: "Strong High/Low" = the setup's own extreme — highest high (shorts) / lowest low (longs) from the first FVG of the zone to the inversion candle. It becomes the Strong High/Low once structure breaks. Fallback: FVG edge. `find_structure_stop()` removed.
+- The SL-hit check skips the inversion candle (the SL can sit exactly at its wick).
+
 ---
 
 ## Issue 3: SL Check Asymmetry Between Creation and Tracking
