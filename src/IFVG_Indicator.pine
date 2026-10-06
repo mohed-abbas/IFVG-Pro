@@ -291,6 +291,13 @@ i_ifvg_border_width = input.int(2, "IFVG Border Width", minval=1, maxval=4, grou
 i_fvg_border_style  = input.string("Solid", "FVG Border Style", options=["Solid", "Dashed", "Dotted"], group=GROUP_BORDER)
 i_ifvg_border_style = input.string("Dashed", "IFVG Border Style", options=["Solid", "Dashed", "Dotted"], group=GROUP_BORDER)
 
+// ─────────────────────────────────────────────────────────────────────
+// DEBUG (kept last so adding/removing it never shifts saved settings)
+// ─────────────────────────────────────────────────────────────────────
+GROUP_DEBUG = "Debug"
+i_show_debug = input.bool(false, "Show Debug Panel", group=GROUP_DEBUG,
+     tooltip="Shows swing and liquidity counters next to the last candle, for troubleshooting")
+
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 3: GLOBAL VARIABLES & DATA STORES
 // ══════════════════════════════════════════════════════════════════════
@@ -311,6 +318,8 @@ var array<SwingPoint> g_swing_lows = array.new<SwingPoint>()
 // Swing candidates awaiting displacement confirmation (automatic swing detection)
 var array<SwingPoint> g_pending_highs = array.new<SwingPoint>()
 var array<SwingPoint> g_pending_lows = array.new<SwingPoint>()
+// Debug counters: candidates H, confirmed H, cancelled H, candidates L, confirmed L, cancelled L
+var array<int> g_dbg_swing = array.from(0, 0, 0, 0, 0, 0)
 
 // Swing detection rules (automatic, not user settings)
 float SWING_CONFIRM_ATR = 1.0  // Close this many ATRs away from a candidate confirms it
@@ -2850,10 +2859,12 @@ if i_show_indicator
         float confirm_dist = atr_value * SWING_CONFIRM_ATR
         // RULE 1: new candidates at [1]
         if swing_cand_high
+            array.set(g_dbg_swing, 0, array.get(g_dbg_swing, 0) + 1)
             array.push(g_pending_highs, SwingPoint.new(price = high[1], bar_idx = bar_index - 1, is_high = true, is_internal = false, is_valid = true, far_close = close[1]))
             if array.size(g_pending_highs) > SWING_PENDING_MAX
                 array.shift(g_pending_highs)
         if swing_cand_low
+            array.set(g_dbg_swing, 3, array.get(g_dbg_swing, 3) + 1)
             array.push(g_pending_lows, SwingPoint.new(price = low[1], bar_idx = bar_index - 1, is_high = false, is_internal = false, is_valid = true, far_close = close[1]))
             if array.size(g_pending_lows) > SWING_PENDING_MAX
                 array.shift(g_pending_lows)
@@ -2864,8 +2875,10 @@ if i_show_indicator
             cand.far_close := math.min(cand.far_close, close)
             bool resolved = false
             if high > cand.price
+                array.set(g_dbg_swing, 2, array.get(g_dbg_swing, 2) + 1)
                 resolved := true
             else if close <= cand.price - confirm_dist
+                array.set(g_dbg_swing, 1, array.get(g_dbg_swing, 1) + 1)
                 array.push(g_swing_highs, cand)
                 if array.size(g_swing_highs) > SWING_MEMORY_MAX
                     array.shift(g_swing_highs)
@@ -2880,8 +2893,10 @@ if i_show_indicator
             cand.far_close := math.max(cand.far_close, close)
             bool resolved = false
             if low < cand.price
+                array.set(g_dbg_swing, 5, array.get(g_dbg_swing, 5) + 1)
                 resolved := true
             else if close >= cand.price + confirm_dist
+                array.set(g_dbg_swing, 4, array.get(g_dbg_swing, 4) + 1)
                 array.push(g_swing_lows, cand)
                 if array.size(g_swing_lows) > SWING_MEMORY_MAX
                     array.shift(g_swing_lows)
@@ -3160,3 +3175,34 @@ if i_show_indicator
     render_liquidity_lines()
     render_dealing_range(g_current_range)
     render_dashboard(current_latest_ifvg)
+
+// ─────────────────────────────────────────────────────────────────────
+// Debug panel (Settings → Debug → Show Debug Panel)
+// ─────────────────────────────────────────────────────────────────────
+var label g_dbg_label = na
+if barstate.islast
+    label.delete(g_dbg_label)
+    if i_show_debug
+        int dbg_live = 0
+        int dbg_ithl_live = 0
+        int dbg_strong = 0
+        int dbg_undecided = 0
+        int dbg_disp = 0
+        int dbg_drawn = 0
+        for dq in g_liquidity_array
+            bool dq_live = dq.is_valid and not dq.is_swept
+            bool dq_internal = dq.liq_type == "ITH" or dq.liq_type == "ITL"
+            if dq_live
+                dbg_live += 1
+            if dq_live and dq_internal
+                dbg_ithl_live += 1
+            if dq_live and dq.is_strong
+                dbg_strong += 1
+            if dq_live and dq_internal and not dq.is_decided
+                dbg_undecided += 1
+            if is_liq_displayable(dq)
+                dbg_disp += 1
+            if not na(dq.line_id)
+                dbg_drawn += 1
+        string dbg_txt = "DEBUG" + "\nbars processed: " + str.tostring(bar_index) + "\nATR: " + str.tostring(atr_value, format.mintick) + "\nshow ITH/ITL: " + str.tostring(i_show_ith_itl) + "\ncandidates H/L: " + str.tostring(array.get(g_dbg_swing, 0)) + "/" + str.tostring(array.get(g_dbg_swing, 3)) + "\nconfirmed H/L: " + str.tostring(array.get(g_dbg_swing, 1)) + "/" + str.tostring(array.get(g_dbg_swing, 4)) + "\ncancelled H/L: " + str.tostring(array.get(g_dbg_swing, 2)) + "/" + str.tostring(array.get(g_dbg_swing, 5)) + "\npending H/L: " + str.tostring(array.size(g_pending_highs)) + "/" + str.tostring(array.size(g_pending_lows)) + "\nswings H/L: " + str.tostring(array.size(g_swing_highs)) + "/" + str.tostring(array.size(g_swing_lows)) + "\nliq total/live: " + str.tostring(array.size(g_liquidity_array)) + "/" + str.tostring(dbg_live) + "\nlive ITH/ITL: " + str.tostring(dbg_ithl_live) + "\nlive strong: " + str.tostring(dbg_strong) + "\nundecided: " + str.tostring(dbg_undecided) + "\ndisplayable: " + str.tostring(dbg_disp) + "\nwith line drawn: " + str.tostring(dbg_drawn)
+        g_dbg_label := label.new(bar_index + 5, high, dbg_txt, style=label.style_label_left, color=color.new(color.black, 10), textcolor=color.white, size=size.normal)

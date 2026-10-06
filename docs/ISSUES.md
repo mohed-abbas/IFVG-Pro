@@ -270,3 +270,5 @@ Two FVGs at completely different price levels got merged just because they were 
 - Strong High/Low at creation no longer scans `close[k]` up to 499 bars back. Each pending swing tracks `far_close` (lowest close since a swing high, highest since a swing low) and the check uses that. Same result, no long history lookback.
 
 **Rule for future changes:** don't wrap code that only mutates `var` arrays in a function whose result is unused. If detection silently produces nothing, check the dashboard Liquidity count first.
+
+**Debug panel (added 2026-10-06):** Settings → Debug → "Show Debug Panel" (off by default, kept as the last input so it never shifts saved settings). Shows swing counters (candidates, confirmed, cancelled, pending, in memory) and liquidity counters (total/live, live ITH/ITL, live strong, undecided, displayable, drawn). Counters always run; the setting only hides the label.
