@@ -168,8 +168,8 @@ Two FVGs at completely different price levels got merged just because they were 
 
 ## Issue 8: Grading System Remodel
 
-**Status:** In progress (2026-10-07). Delivery, grading bands, reclaimed sweeps and the SL rule verified on TradingView. Still open: news-candle ("Data") highs/lows and trendline (LRLR) targets.
-**Affected Code:** `calculate_grade()`, `score_target()`, `check_setup_sweep()`, `fvg_delivered()` / `find_delivery()`, `is_ifvg_stopped()` (Sections 7-9)
+**Status:** In progress (2026-10-07). Delivery, grading bands, reclaimed sweeps, the SL rule and LRLR targets verified on TradingView. Still open: news-candle ("Data") highs/lows.
+**Affected Code:** `calculate_grade()`, `score_target()`, `check_setup_sweep()`, `fvg_delivered()` / `find_delivery()`, `is_ifvg_stopped()`, `build_lrlr()` / `update_lrlr()` / `lrlr_in_path()` (Sections 6-10)
 
 **Description:** The current grading system has several misunderstandings and needs a complete remodel. To be tackled after all other issues are resolved, with discussion to align on the desired grading logic.
 
@@ -186,6 +186,7 @@ Two FVGs at completely different price levels got merged just because they were 
 - **Invalid entries:** keep the grade, label shows "(invalid)".
 - **SL hit:** only an opposite-color candle closing beyond the IFVG box (sell candle below for longs, buy candle above for shorts). Wicks never stop the setup. Stopped = mitigated (removed) in the same event.
 - **Delivery (#57, #60):** price turned from an active FVG in the setup's direction (bullish FVG below for longs, bearish above for shorts) that existed before the setup's extreme; the extreme's wick reached into it; no chart-TF close beyond its far edge. Checked HTF1 → HTF2 → chart TF; chart-TF delivery costs one step (max A with a sweep). PD zone alone is never delivery. Tooltip shows the source TF and price range. The old check looked for the opposite direction and never required a tap.
+- **LRLR trendline liquidity (verified 2026-10-07):** 3+ consecutive lower highs (above price) or higher lows (below price) ending at the newest swing, all within 0.25 ATR of one line (`LRLR_FIT_ATR`), with no close through the line. Rebuilt on each new swing, removed on a close through it. Counts as a target (its origin high/low is the price) and as confluence: with a flat target it makes the target clear regardless of R:R. Tooltip shows "+ LRLR". Drawn dashed in the liquidity color with an "LRLR" tag; one toggle "Show LRLR Trendlines" (on by default), no other settings.
 
 ---
 

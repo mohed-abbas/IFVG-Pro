@@ -28,6 +28,7 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 - ✓ Delivery-from-FVG detection with HTF priority cascade — Phase 5
 - ✓ Numeric momentum scoring (0-2) replacing string categories — Phase 5
 - ✓ Tooltip with full grading breakdown per criterion — Phase 5
+- ✓ LRLR trendline liquidity as target and confluence — Phase 5
 
 ### Active
 
@@ -44,7 +45,6 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 
 ### Out of Scope
 
-- LRLR trendline liquidity — complex diagonal rendering, defer to future
 - SMT divergence detection — requires correlated symbol data, defer to future
 - Mobile app or web interface — TradingView-only indicator
 - Backtesting engine — TradingView strategy scripts are a separate tool
@@ -99,6 +99,7 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 | Broken level reclaimed within 3 closes counts as a setup sweep (2026-10-07) | Same raid was a sweep on 3m and "broken" on 1m | ✓ Good |
 | SL hit only on opposite-color close beyond the IFVG box (2026-10-07) | Wicks to the SL line invalidated good setups | ✓ Good |
 | Delivery = turn tapped an active same-direction FVG formed before the turn; HTF first, chart TF one step lower (2026-10-07) | Old check used the opposite direction and no tap | ✓ Good |
+| LRLR = 3+ consecutive lower highs / higher lows within 0.25 ATR of one line, no close through; target at its origin and confluence for a flat target (2026-10-07) | Trendline liquidity is a strategy target; one toggle, no settings | ✓ Good |
 | barstate.isconfirmed only | Prevents repainting — critical for trading decisions | ✓ Good |
 | HTF swing-based PD zones over daily range | More accurate ICT dealing range concept | — Pending |
 | Hybrid grading (tier + quality score) | Separates mandatory criteria from quality modifiers | ✓ Good |
