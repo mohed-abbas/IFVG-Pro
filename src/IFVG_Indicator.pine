@@ -104,7 +104,8 @@ type IFVG
     bool has_sweep      // Liquidity sweep present
     bool sweep_reclaimed // true when the sweep closed through the level and got back (no wick-only sweep)
     string momentum     // "strong_no_chop", "neutral", "weak_or_choppy"
-    bool has_delivery   // true if delivery from prior FVG detected (per D-01)
+    bool has_delivery   // true if price delivered from an active FVG during the setup's move
+    string delivery_src // delivering FVG as "<TF> <bottom>-<top>" ("" = none, "same TF ..." = chart TF)
     string pd_zone      // "premium", "discount", "equilibrium", "neutral"
     int momentum_score     // 0=weak, 1=moderate, 2=strong (raw assess_momentum result)
     int singularity_score  // 0=not singular, 1=singular small, 2=singular obvious
@@ -682,6 +683,29 @@ merge_with_existing_fvg(FVG new_fvg) =>
 // When false, fall back to chart-TF g_liquidity_array. (D-05)
 is_pd_tf_higher() =>
     timeframe.in_seconds(i_pd_timeframe) > timeframe.in_seconds(timeframe.period)
+
+// ─────────────────────────────────────────────────────────────────────
+// Get timeframe display label
+// ─────────────────────────────────────────────────────────────────────
+get_tf_label(string tf) =>
+    string result = tf
+    if tf == "1"
+        result := "1m"
+    else if tf == "3"
+        result := "3m"
+    else if tf == "5"
+        result := "5m"
+    else if tf == "15"
+        result := "15m"
+    else if tf == "30"
+        result := "30m"
+    else if tf == "60"
+        result := "1H"
+    else if tf == "120"
+        result := "2H"
+    else if tf == "240"
+        result := "4H"
+    result
 
 // Computes pd_zone for an IFVG midpoint against the current range.
 // Strict 50% equilibrium (D-13). Returns "neutral" when no valid range (D-06).
@@ -1574,20 +1598,6 @@ find_previous_swing_low(int before_bar) =>
     result
 
 // ─────────────────────────────────────────────────────────────────────
-// Bar index of the most recent confirmed swing in `swings` before `before_bar` (na if none)
-// ─────────────────────────────────────────────────────────────────────
-find_swing_bar_before(array<SwingPoint> swings, int before_bar) =>
-    int result = na
-    int n = array.size(swings)
-    if n > 0
-        for i = n - 1 to 0
-            SwingPoint sp = array.get(swings, i)
-            if sp.bar_idx < before_bar
-                result := sp.bar_idx
-                break
-    result
-
-// ─────────────────────────────────────────────────────────────────────
 // Find nearest Draw on Liquidity (target)
 // For bullish IFVG: find BSL (highs above)
 // For bearish IFVG: find SSL (lows below)
@@ -1731,86 +1741,61 @@ is_fvg_singular(FVG source_fvg) =>
     singular
 
 // ─────────────────────────────────────────────────────────────────────
-// Check if delivery from a prior FVG occurred before the IFVG (per D-01)
-// Searches HTF arrays first (priority cascade per D-11), then LTF.
-// Returns true if an active opposite-direction FVG was found where
-// candle bodies respected the zone (no body close through it per D-04).
+// True if price turned from `f` (delivered from it) in the setup's move
+// RULE 1: Same direction as the IFVG — a bullish FVG below for longs (price taps the
+//         discount gap and turns up), a bearish FVG above for shorts.
+// RULE 2: Still active at inversion (not inverted on its own timeframe).
+// RULE 3: It existed before the turn — the setup's extreme (lowest low for longs,
+//         highest high for shorts, `extreme_off` bars back). Gaps left by the move
+//         out of the turn do not count.
+// RULE 4: The turn reached into it (extreme wick at or beyond its near edge).
+// RULE 5: Bodies respected it: no chart-TF close beyond its far edge from its
+//         formation (or window_start) to the inversion candle.
 // ─────────────────────────────────────────────────────────────────────
-// RULE (automatic window, no lookback): the source FVG must have formed inside the leg
-// that led into the setup — at or after `window_start`, the opposite swing the move
-// started from. Body respect is checked up to 499 bars (max_bars_back).
-check_delivery_from_fvg(bool ifvg_is_bullish, int window_start) =>
+fvg_delivered(FVG f, bool ifvg_is_bullish, int window_start, int extreme_off) =>
     bool result = false
-    // For bullish IFVG, look for bearish source FVG (price delivered DOWN from it)
-    // For bearish IFVG, look for bullish source FVG (price delivered UP from it)
-    bool look_for_bullish = not ifvg_is_bullish
-    // Priority cascade: HTF1 -> HTF2 -> LTF (per D-11, D-12)
-    // Check each array; if match found, return immediately
-    // Helper: check a single FVG array for delivery
-    // We inline the logic for each array to avoid Pine Script limitations
-    // --- HTF1 array ---
-    if not result and array.size(g_htf_fvg_array) > 0
-        for i = array.size(g_htf_fvg_array) - 1 to 0
-            if not result and i >= 0 and i < array.size(g_htf_fvg_array)
-                FVG candidate = array.get(g_htf_fvg_array, i)
-                if candidate.is_bullish == look_for_bullish and candidate.status == "active"
-                    int bar_dist = bar_index - candidate.end_bar
-                    if bar_dist > 0 and candidate.start_bar >= window_start
-                        // Body respect check (per D-04): no body close through zone
-                        bool bodies_respected = true
-                        int check_bars = int(math.min(bar_dist - 1, 499))
-                        for k = 1 to check_bars
-                            if bodies_respected
-                                if look_for_bullish
-                                    // Bullish source FVG: no body close below bottom
-                                    if close[k] < candidate.bottom
-                                        bodies_respected := false
-                                else
-                                    // Bearish source FVG: no body close above top
-                                    if close[k] > candidate.top
-                                        bodies_respected := false
-                        if bodies_respected
-                            result := true
-    // --- HTF2 array ---
-    if not result and array.size(g_htf2_fvg_array) > 0
-        for i = array.size(g_htf2_fvg_array) - 1 to 0
-            if not result and i >= 0 and i < array.size(g_htf2_fvg_array)
-                FVG candidate = array.get(g_htf2_fvg_array, i)
-                if candidate.is_bullish == look_for_bullish and candidate.status == "active"
-                    int bar_dist = bar_index - candidate.end_bar
-                    if bar_dist > 0 and candidate.start_bar >= window_start
-                        bool bodies_respected = true
-                        int check_bars = int(math.min(bar_dist - 1, 499))
-                        for k = 1 to check_bars
-                            if bodies_respected
-                                if look_for_bullish
-                                    if close[k] < candidate.bottom
-                                        bodies_respected := false
-                                else
-                                    if close[k] > candidate.top
-                                        bodies_respected := false
-                        if bodies_respected
-                            result := true
-    // --- LTF array ---
-    if not result and array.size(g_fvg_array) > 0
+    int turn_bar = bar_index - extreme_off
+    if f.is_bullish == ifvg_is_bullish and f.status == "active" and f.end_bar < turn_bar
+        bool tapped = ifvg_is_bullish ? low[extreme_off] <= f.top : high[extreme_off] >= f.bottom
+        if tapped
+            bool respected = true
+            int from_bar = int(math.max(window_start, f.end_bar + 1))
+            int span = int(math.min(bar_index - from_bar, 499))
+            if span >= 0
+                for k = 0 to span
+                    if ifvg_is_bullish ? close[k] < f.bottom : close[k] > f.top
+                        respected := false
+            result := respected
+    result
+
+// Tooltip text for a delivering FVG: timeframe and price range
+delivery_text(string tf_text, FVG f) =>
+    tf_text + " " + str.tostring(f.bottom, format.mintick) + "-" + str.tostring(f.top, format.mintick)
+
+// ─────────────────────────────────────────────────────────────────────
+// Delivery source for a new IFVG: the selected higher timeframes first (HTF1, then
+// HTF2), then the chart timeframe (counts, but slightly less confident).
+// Returns "<TF> <bottom>-<top>" of the delivering FVG ("same TF ..." for the chart
+// TF), or "" for none.
+// ─────────────────────────────────────────────────────────────────────
+find_delivery(bool ifvg_is_bullish, int window_start, int extreme_off) =>
+    string result = ""
+    if i_enable_htf
+        if array.size(g_htf_fvg_array) > 0
+            for i = array.size(g_htf_fvg_array) - 1 to 0
+                FVG f = array.get(g_htf_fvg_array, i)
+                if result == "" and fvg_delivered(f, ifvg_is_bullish, window_start, extreme_off)
+                    result := delivery_text(get_tf_label(i_htf_timeframe), f)
+        if result == "" and array.size(g_htf2_fvg_array) > 0
+            for i = array.size(g_htf2_fvg_array) - 1 to 0
+                FVG f = array.get(g_htf2_fvg_array, i)
+                if result == "" and fvg_delivered(f, ifvg_is_bullish, window_start, extreme_off)
+                    result := delivery_text(get_tf_label(i_htf_timeframe_2), f)
+    if result == "" and array.size(g_fvg_array) > 0
         for i = array.size(g_fvg_array) - 1 to 0
-            if not result and i >= 0 and i < array.size(g_fvg_array)
-                FVG candidate = array.get(g_fvg_array, i)
-                if candidate.is_bullish == look_for_bullish and candidate.status == "active"
-                    int bar_dist = bar_index - candidate.end_bar
-                    if bar_dist > 0 and candidate.start_bar >= window_start
-                        bool bodies_respected = true
-                        int check_bars = int(math.min(bar_dist - 1, 499))
-                        for k = 1 to check_bars
-                            if bodies_respected
-                                if look_for_bullish
-                                    if close[k] < candidate.bottom
-                                        bodies_respected := false
-                                else
-                                    if close[k] > candidate.top
-                                        bodies_respected := false
-                        if bodies_respected
-                            result := true
+            FVG f = array.get(g_fvg_array, i)
+            if result == "" and fvg_delivered(f, ifvg_is_bullish, window_start, extreme_off)
+                result := delivery_text("same TF", f)
     result
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1875,17 +1860,18 @@ is_far_wrong_zone(int pd_pct, bool ifvg_is_bullish) =>
 //         target, a singular FVG and the correct PD zone; floor B.
 // RULE 2: Sweep OR delivery → starts at A; floor B.
 //         One step down for each: momentum moderate (1) / weak (2), not singular,
-//         target closer than the stop, wrong PD zone.
+//         target closer than the stop, wrong PD zone, delivery only from a
+//         chart-TF FVG (higher-timeframe delivery is the full-confidence kind).
 // RULE 3: Neither → starts at B; floor B-. Steps: weak momentum, target closer
 //         than the stop (wrong zone and a non-obvious gap are normal for B).
 // RULE 4: No target → at most B-.
 // RULE 5: Neither AND far in the wrong zone → C ("way too high/low", no bias).
 // ─────────────────────────────────────────────────────────────────────
-calculate_grade(bool has_sweep, bool has_delivery, int momentum_score, int target_score, int singularity_score, string pd_zone, int pd_pct, bool ifvg_is_bullish) =>
+calculate_grade(bool has_sweep, bool has_delivery, bool delivery_htf, int momentum_score, int target_score, int singularity_score, string pd_zone, int pd_pct, bool ifvg_is_bullish) =>
     int pd_score = score_pd_zone(pd_zone, ifvg_is_bullish)
     int idx = 4
     if has_sweep or has_delivery
-        int steps = (2 - momentum_score) + (singularity_score == 0 ? 1 : 0) + (target_score == 1 ? 1 : 0) + (pd_score == 0 ? 1 : 0)
+        int steps = (2 - momentum_score) + (singularity_score == 0 ? 1 : 0) + (target_score == 1 ? 1 : 0) + (pd_score == 0 ? 1 : 0) + (has_delivery and not delivery_htf ? 1 : 0)
         if has_sweep and has_delivery
             // A+ also needs the correct zone; neutral/equilibrium is one step
             if steps == 0 and pd_score == 1
@@ -2078,12 +2064,10 @@ check_inversions() =>
                             int sweep_kind = check_setup_sweep(not ifvg_is_bullish, s_start)
                             bool has_sweep = sweep_kind > 0
 
-                            // Check delivery from prior FVG (per D-01)
-                            // Delivery window starts at the swing the move into the setup came from
-                            // (long: swing high before the FVG; short: swing low), else 499 bars back
-                            int leg_start = find_swing_bar_before(ifvg_is_bullish ? g_swing_highs : g_swing_lows, s_start)
-                            int delivery_start = na(leg_start) ? bar_index - 499 : leg_start
-                            bool has_delivery = check_delivery_from_fvg(ifvg_is_bullish, delivery_start)
+                            // Delivery: price tapped an active FVG (HTF first, then chart TF) during
+                            // the setup's move (FVG formation → inversion)
+                            string delivery_src = find_delivery(ifvg_is_bullish, s_start, extreme_off)
+                            bool has_delivery = delivery_src != ""
 
                             // Assess momentum (returns int 0-2 per D-08)
                             int momentum_score = assess_momentum(ifvg_is_bullish, s_top, s_bottom, extreme_off)
@@ -2097,7 +2081,7 @@ check_inversions() =>
                             string ifvg_pd_zone = compute_pd_zone(s_mid)
                             int ifvg_pd_pct = compute_range_percent(s_mid)
                             int target_score = score_target(dol, close, sl_level)
-                            string grade = calculate_grade(has_sweep, has_delivery, momentum_score, target_score, singular_score, ifvg_pd_zone, ifvg_pd_pct, ifvg_is_bullish)
+                            string grade = calculate_grade(has_sweep, has_delivery, not str.startswith(delivery_src, "same TF"), momentum_score, target_score, singular_score, ifvg_pd_zone, ifvg_pd_pct, ifvg_is_bullish)
 
                             // Create IFVG
                             new_ifvg = IFVG.new(
@@ -2120,6 +2104,7 @@ check_inversions() =>
                                 sweep_reclaimed = sweep_kind == 2,
                                 momentum = momentum_str,
                                 has_delivery = has_delivery,
+                                delivery_src = delivery_src,
                                 pd_zone = ifvg_pd_zone,
                                 momentum_score = momentum_score,
                                 singularity_score = singular_score,
@@ -2584,7 +2569,7 @@ render_ifvg_boxes() =>
                             int tt_sg = ifvg.singularity_score
                             int tt_pd = score_pd_zone(ifvg.pd_zone, ifvg.is_bullish)
                             string sweep_text = ifvg.sweep_reclaimed ? "Sweep (closed through, reclaimed)" : "Sweep"
-                            string band_text = ifvg.has_sweep and ifvg.has_delivery ? sweep_text + " + Delivery (A+ band)" : (ifvg.has_sweep ? sweep_text + " only (A band)" : (ifvg.has_delivery ? "Delivery only (A band)" : "No sweep or delivery (B band)"))
+                            string band_text = ifvg.has_sweep and ifvg.has_delivery ? sweep_text + " + Delivery (" + ifvg.delivery_src + ") (A+ band)" : (ifvg.has_sweep ? sweep_text + " only (A band)" : (ifvg.has_delivery ? "Delivery (" + ifvg.delivery_src + ") only (A band)" : "No sweep or delivery (B band)"))
                             string mom_text = tt_mom == 2 ? "Strong, no chop" : (tt_mom == 0 ? "Weak / choppy" : "Some chop")
                             string tgt_text = tt_tgt == 2 ? "Clear" : (tt_tgt == 1 ? "Closer than stop" : "None")
                             string dol_text = not na(ifvg.dol) ? (" (now " + ifvg.dol.liq_type + " @ " + str.tostring(ifvg.dol.level, format.mintick) + ")") : ""
@@ -2745,29 +2730,6 @@ render_htf_ifvg_boxes(array<IFVG> arr, string tf_label) =>
                                 textalign = text.align_right,
                                 yloc = yloc.price
                             )
-
-// ─────────────────────────────────────────────────────────────────────
-// Get timeframe display label
-// ─────────────────────────────────────────────────────────────────────
-get_tf_label(string tf) =>
-    string result = tf
-    if tf == "1"
-        result := "1m"
-    else if tf == "3"
-        result := "3m"
-    else if tf == "5"
-        result := "5m"
-    else if tf == "15"
-        result := "15m"
-    else if tf == "30"
-        result := "30m"
-    else if tf == "60"
-        result := "1H"
-    else if tf == "120"
-        result := "2H"
-    else if tf == "240"
-        result := "4H"
-    result
 
 // ─────────────────────────────────────────────────────────────────────
 // Count live (unswept, unbroken) liquidity levels for the dashboard
