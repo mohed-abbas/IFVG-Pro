@@ -315,7 +315,7 @@ Two FVGs at completely different price levels got merged just because they were 
 
 ## Issue 15: Remaining Lookback Settings (PD Swing Lookback, Delivery 20 Bars)
 
-**Status:** Resolved (2026-10-06, verified on TradingView: EUR/USD, GBPJPY, XAUUSD, NQ — 15m chart, PD TF 15m). Not yet observed: a bearish flip after a confirmed lower low; PD TF = Daily.
+**Status:** Resolved (2026-10-06, verified on TradingView: EUR/USD, GBPJPY, XAUUSD, NQ — 15m chart, PD TF 15m). PD TF = Daily verified 2026-10-07 (see revision).
 **Affected Code:** `pd_swing_feed()` + PD `request.security` (Section 5B), `check_pd_sweeps()` (Section 6), Step 4C dealing-range selection (Section 12), `check_delivery_from_fvg()` / `find_swing_bar_before()` (Section 7–8)
 
 **Goal:** No bar-lookback settings (user preference). Remove "PD Swing Lookback" and the hardcoded 20-bar delivery window.
@@ -338,3 +338,9 @@ Two FVGs at completely different price levels got merged just because they were 
 **Delivery:** the source FVG must have formed inside the leg that led into the setup — at or after the swing the move came from (swing high before a long setup's FVG, swing low before a short's); body-respect check up to 499 bars. Fallback window: 499 bars.
 
 **Settings:** "PD Swing Lookback" removed → saved settings shift; use Defaults → Reset settings once.
+
+**Revision (2026-10-07, verified on TradingView: NQ 15m/1h, BTCUSD, XAUUSD, PD TF 15m/1h/1D):**
+- Problems: (1) PD TF = Daily: the range stuck at 100% because a new top only counts once a daily swing confirms; (2) a minor bounce between the top and the drop cut the leg short (chain of lower highs broke); (3) after a bounce, the newest small swings became the range (BTCUSD, XAUUSD).
+- Rules now: bullish leg = oldest unbroken PD swing high (no later higher high) whose leg is intact; start = lowest swing low since price was last above that high, or, at the top of memory, the chain of higher lows (stop at the first higher one). Bearish mirrored. Both intact → older start wins (a bounce inside a bigger move is a pullback). The far end follows the chart's running high/low until a new PD swing confirms.
+- Performance: legs are cached and rebuilt only when a new PD swing arrives, and the running extreme is tracked incrementally (the per-bar search hit the 20 s execution limit, RE10110).
+- Consequence (accepted): a drop that has not broken the rally's start low shows the whole rally as the range.
