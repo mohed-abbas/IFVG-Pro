@@ -176,6 +176,7 @@ Two FVGs at completely different price levels got merged just because they were 
 **Open questions — under testing (2026-10-07), decide before the remodel:**
 - Multi-candle sweeps (Issue 11): user verifying live.
 - Series of gaps (Issue 7): a series is never "singular" and its own gaps can't count as "delivery", so it grades lower and can be hidden by *Min Grade to Display* (seen once on a 3m chart). Should a valid series grade like a single FVG, or stay lower ("usually only trade singular FVGs")? User collecting examples.
+- Linked: removing the old `merge_with_existing_fvg()` (back-to-back gaps merged at detection count as one "singular" FVG). Removing it is safe only if a series grades like a single FVG; otherwise those setups (e.g. the HTF A SELL example) would drop a grade.
 
 ---
 

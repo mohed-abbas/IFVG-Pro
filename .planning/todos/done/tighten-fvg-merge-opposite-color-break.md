@@ -80,3 +80,7 @@ Visual regression on TradingView using NQ1!/ES1!/BTCUSD 15m and 1H charts:
 - Apply fix; confirm those clusters now split.
 - Confirm continuous impulses (no opposite candles) still merge.
 - Check that A+/A grade distribution doesn't collapse — splitting may expose more singular FVGs, which is expected and desirable.
+
+## Status (2026-10-07)
+
+Done: implemented in `23c84e7`, `817ed9f`, `140634e` (combined-span opposite-color scan). Superseded for setup logic by the Series of Gaps rule (docs/ISSUES.md Issue 7). Removing `merge_with_existing_fvg()` entirely is on hold until the series grading decision (Issue 8).

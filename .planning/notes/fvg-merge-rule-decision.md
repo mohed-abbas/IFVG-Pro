@@ -56,3 +56,7 @@ Source: chart visual reviewed during 2026-05-17 exploration session. Pattern: bu
 
 - If post-fix charts show legitimate continuous impulses getting split because their middle bar happened to be a small red candle on volume noise → consider promoting to "body retraces into prior FVG" rule.
 - If singularity scoring starts dropping too many newly-split clusters to score 0 → revisit the ATR×0.1 overlap tolerance in `is_fvg_singular` together with this rule.
+
+## Status (2026-10-07)
+
+Superseded by the Series of Gaps rule (docs/ISSUES.md Issue 7): same-direction gaps chain while candles between their windows are the move's color; the setup fires once on a close through all of them. The merge function still runs at detection; its removal waits on the series grading decision (Issue 8).
