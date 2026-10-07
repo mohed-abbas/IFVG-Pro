@@ -3312,15 +3312,16 @@ if i_show_indicator
             sel_itl := safety_itl
     // Leg-based dealing range (preferred): the range spans the CURRENT leg.
     // Bullish leg:
-    //   RULE 1 (start): walk back through the PD swing lows before the newest swing high
-    //     while each older low is LOWER (chain of higher lows); stop at the first older low
-    //     that is higher. The lowest low of the chain is the leg start (range 0).
-    //     Trade-off (accepted 2026-10-06): a small sweep low inside a consolidation before
-    //     the rally becomes the leg start, even if a similar low sits just before it.
+    //   RULE 1 (start): the LOWEST PD swing low since price was last above the newest swing
+    //     high — i.e. after the most recent older swing high that is higher than it. Minor
+    //     bounces between the start and the top never cut the leg. If the newest high is
+    //     above everything in memory, walk back the chain of higher lows instead (stop at
+    //     the first older low that is higher) — where the rally started.
     //   RULE 2 (top): the HIGHEST PD swing high after the start (range 1) — a lower high
     //     in a pullback never replaces the top.
     //   RULE 3 (intact): no PD swing low after the start is below it (no lower low).
-    // Bearish leg: mirrored (chain of lower highs, lowest low after the start, no higher high).
+    // Bearish leg: mirrored (highest swing high since price was last below the newest swing
+    //   low, lowest low after the start, no higher high).
     // RULE 4: if both legs are intact, use the OUTER one (older start) — a pullback inside
     //   a range is never treated as a new range. Otherwise use whichever is intact.
     // Independent of how many swings are in memory. Falls back to the freshest-unswept
@@ -3340,15 +3341,28 @@ if i_show_indicator
     if n_ph > 0 and n_pl > 0
         SwingPoint last_h = array.get(g_pd_swing_highs, n_ph - 1)
         SwingPoint last_l = array.get(g_pd_swing_lows, n_pl - 1)
-        // Bullish leg: start = chain of higher lows before the newest high
-        for k = n_pl - 1 to 0
-            SwingPoint lk = array.get(g_pd_swing_lows, k)
-            if lk.bar_idx < last_h.bar_idx
-                if na(bull_lo) or lk.price < bull_lo
+        // Bullish leg: start = lowest low since price was last above the newest high
+        int bull_from = -1
+        for k = n_ph - 1 to 0
+            SwingPoint hk = array.get(g_pd_swing_highs, k)
+            if bull_from < 0 and hk.bar_idx < last_h.bar_idx and hk.price > last_h.price
+                bull_from := hk.bar_idx
+        if bull_from >= 0
+            for k = 0 to n_pl - 1
+                SwingPoint lk = array.get(g_pd_swing_lows, k)
+                if lk.bar_idx > bull_from and lk.bar_idx < last_h.bar_idx and (na(bull_lo) or lk.price < bull_lo)
                     bull_lo := lk.price
                     bull_lo_bar := lk.bar_idx
-                else
-                    break
+        else
+            // New high above everything in memory: chain of higher lows (stop at first higher)
+            for k = n_pl - 1 to 0
+                SwingPoint lk = array.get(g_pd_swing_lows, k)
+                if lk.bar_idx < last_h.bar_idx
+                    if na(bull_lo) or lk.price < bull_lo
+                        bull_lo := lk.price
+                        bull_lo_bar := lk.bar_idx
+                    else
+                        break
         if not na(bull_lo)
             bull_ok := true
             for k = 0 to n_ph - 1
@@ -3361,15 +3375,28 @@ if i_show_indicator
                 if lk.bar_idx > bull_lo_bar and lk.price < bull_lo
                     bull_ok := false
             bull_ok := bull_ok and not na(bull_hi)
-        // Bearish leg: start = chain of lower highs before the newest low
-        for k = n_ph - 1 to 0
-            SwingPoint hk = array.get(g_pd_swing_highs, k)
-            if hk.bar_idx < last_l.bar_idx
-                if na(bear_hi) or hk.price > bear_hi
+        // Bearish leg: start = highest high since price was last below the newest low
+        int bear_from = -1
+        for k = n_pl - 1 to 0
+            SwingPoint lk = array.get(g_pd_swing_lows, k)
+            if bear_from < 0 and lk.bar_idx < last_l.bar_idx and lk.price < last_l.price
+                bear_from := lk.bar_idx
+        if bear_from >= 0
+            for k = 0 to n_ph - 1
+                SwingPoint hk = array.get(g_pd_swing_highs, k)
+                if hk.bar_idx > bear_from and hk.bar_idx < last_l.bar_idx and (na(bear_hi) or hk.price > bear_hi)
                     bear_hi := hk.price
                     bear_hi_bar := hk.bar_idx
-                else
-                    break
+        else
+            // New low below everything in memory: chain of lower highs (stop at first lower)
+            for k = n_ph - 1 to 0
+                SwingPoint hk = array.get(g_pd_swing_highs, k)
+                if hk.bar_idx < last_l.bar_idx
+                    if na(bear_hi) or hk.price > bear_hi
+                        bear_hi := hk.price
+                        bear_hi_bar := hk.bar_idx
+                    else
+                        break
         if not na(bear_hi)
             bear_ok := true
             for k = 0 to n_pl - 1
@@ -3392,6 +3419,20 @@ if i_show_indicator
     int leg_hi_bar = use_bull ? bull_hi_bar : bear_hi_bar
     float leg_lo = not any_leg ? na : (use_bull ? bull_lo : bear_lo)
     int leg_lo_bar = use_bull ? bull_lo_bar : bear_lo_bar
+    // RULE 5 (running extreme): when price trades beyond the leg's far end before a new
+    // PD swing confirms (slow on Daily), extend that end to the chart's running high
+    // (bullish leg) / low (bearish leg) since it. Range % never sticks at 100% / 0%.
+    if any_leg and not na(leg_hi) and not na(leg_lo)
+        int ext_from = use_bull ? leg_hi_bar : leg_lo_bar
+        int ext_span = int(math.min(bar_index - ext_from, 499))
+        if ext_span >= 0
+            for k = 0 to ext_span
+                if use_bull and high[k] > leg_hi
+                    leg_hi := high[k]
+                    leg_hi_bar := bar_index - k
+                if not use_bull and low[k] < leg_lo
+                    leg_lo := low[k]
+                    leg_lo_bar := bar_index - k
     if na(leg_hi) or na(leg_lo)
         leg_hi := na
         leg_lo := na
