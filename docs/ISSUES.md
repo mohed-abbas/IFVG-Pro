@@ -172,6 +172,10 @@ Two FVGs at completely different price levels got merged just because they were 
 
 **Description:** The current grading system has several misunderstandings and needs a complete remodel. To be tackled after all other issues are resolved, with discussion to align on the desired grading logic.
 
+**Open questions — under testing (2026-10-07), decide before the remodel:**
+- Multi-candle sweeps (Issue 11): user verifying live.
+- Series of gaps (Issue 7): a series is never "singular" and its own gaps can't count as "delivery", so it grades lower and can be hidden by *Min Grade to Display* (seen once on a 3m chart). Should a valid series grade like a single FVG, or stay lower ("usually only trade singular FVGs")? User collecting examples.
+
 ---
 
 ## Issue 9: "Bar index too far" Runtime Error on Old Drawings
