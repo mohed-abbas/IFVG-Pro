@@ -4,7 +4,7 @@ date: 2026-10-05
 priority: medium
 area: src/IFVG_Indicator.pine (check_setup_sweep)
 revisit: after swing rework (Option D) and before grading remodel (#8)
-status: deferred — test first, then decide
+status: done — rules 2+3 applied 2026-10-06, verified live 2026-10-07
 ---
 
 # Multi-candle sweep rule

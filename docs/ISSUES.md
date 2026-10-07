@@ -173,10 +173,11 @@ Two FVGs at completely different price levels got merged just because they were 
 
 **Description:** The current grading system has several misunderstandings and needs a complete remodel. To be tackled after all other issues are resolved, with discussion to align on the desired grading logic.
 
-**Open questions — under testing (2026-10-07), decide before the remodel:**
-- Multi-candle sweeps (Issue 11): user verifying live.
-- Series of gaps (Issue 7): a series is never "singular" and its own gaps can't count as "delivery", so it grades lower and can be hidden by *Min Grade to Display* (seen once on a 3m chart). Should a valid series grade like a single FVG, or stay lower ("usually only trade singular FVGs")? User collecting examples.
-- Linked: removing the old `merge_with_existing_fvg()` (back-to-back gaps merged at detection count as one "singular" FVG). Removing it is safe only if a series grades like a single FVG; otherwise those setups (e.g. the HTF A SELL example) would drop a grade.
+**Open questions — resolved by live testing (2026-10-07):**
+- Multi-candle sweeps (Issue 11): verified, the applied rule stays.
+- Series of gaps (Issue 7): keep the current grading. A series is never "singular" and its own gaps don't count as "delivery", so it grades lower than a single FVG ("usually only trade singular FVGs").
+- Consequence: `merge_with_existing_fvg()` stays. Removing it would drop back-to-back gaps (e.g. the HTF A SELL example) a grade, since merged gaps count as one singular FVG.
+- If this logic is ever revisited: changing series grading and removing the merge must be decided together.
 
 ---
 
@@ -221,7 +222,7 @@ Two FVGs at completely different price levels got merged just because they were 
 
 ## Issue 11: Multi-Candle Raids Not Credited as Sweeps
 
-**Status:** Fix applied 2026-10-06 — pending live verification on TradingView (user testing in real time)
+**Status:** Resolved (fix applied 2026-10-06, verified live on TradingView 2026-10-07)
 **Affected Code:** `check_setup_sweep()` (Section 7)
 **Details:** `.planning/todos/pending/multi-candle-sweep-rule.md`
 

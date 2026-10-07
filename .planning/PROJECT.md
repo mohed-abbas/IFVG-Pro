@@ -93,6 +93,8 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 | Label lanes: PD above-right, liquidity below-right, entry above-left, IFVG tag inside box; near-equal liquidity levels share one label (2026-10-07) | Labels overlapped (EQH on PD 1.0, Strong High on entry, IFVG on entry) | ✓ Good |
 | Series of gaps also on HTF FVGs (HTF candle colors from the existing security calls); HTF FVG memory 50, display capped by "Max Active FVGs" (2026-10-07) | Same per-gap early inversion and 3-FVG eviction existed on HTF | ✓ Good |
 | PD leg = oldest unbroken extreme with intact leg, start since price was last beyond it, running far end; cached per PD swing (2026-10-07) | Daily range stuck at 100%, bounces became the range, per-bar search timed out | ✓ Good |
+| Multi-candle sweeps count: move's extreme at/after the sweep candle, no close beyond the level until inversion (verified 2026-10-07) | Raids where one candle sweeps and a later one makes the top were shown as "Delivery only" | ✓ Good |
+| A series of gaps grades lower than a single FVG (not singular, own gaps not delivery); detection-time FVG merge kept (2026-10-07) | Strategy favours singular FVGs; removing the merge would drop back-to-back gaps a grade | ✓ Good |
 | barstate.isconfirmed only | Prevents repainting — critical for trading decisions | ✓ Good |
 | HTF swing-based PD zones over daily range | More accurate ICT dealing range concept | — Pending |
 | Hybrid grading (tier + quality score) | Separates mandatory criteria from quality modifiers | ✓ Good |
