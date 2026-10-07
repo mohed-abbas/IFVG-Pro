@@ -2065,18 +2065,11 @@ check_inversions() =>
                                 sl_level := ifvg_is_bullish ? s_bottom : s_top
 
                             // ═══════════════════════════════════════════════════════════
-                            // ENTRY VALIDITY - Check if SL has been hit
+                            // ENTRY VALIDITY - the SL is hit only by an opposite-color candle
+                            // closing beyond the IFVG box (see is_ifvg_stopped); the inversion
+                            // candle closes on the other side, so the entry starts valid
                             // ═══════════════════════════════════════════════════════════
-                            // NOTE: a "strong" SL is built from this candle's range, so it is
-                            // never hit on the inversion candle itself
                             bool entry_valid = true
-                            if sl_type_used != "strong"
-                                if ifvg_is_bullish
-                                    // Bullish: Invalid if price went BELOW SL level
-                                    entry_valid := low > sl_level
-                                else
-                                    // Bearish: Invalid if price went ABOVE SL level
-                                    entry_valid := high < sl_level
 
                             // Find DOL (target)
                             Liquidity dol = find_dol(ifvg_is_bullish, close)
@@ -2153,6 +2146,14 @@ check_inversions() =>
 // ══════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────
+// SL hit / setup invalidated: a sell candle closes below the IFVG box (longs) or
+// a buy candle closes above it (shorts). Wicks through the box or the SL line do
+// not stop the setup.
+// ─────────────────────────────────────────────────────────────────────
+is_ifvg_stopped(IFVG ifvg) =>
+    ifvg.is_bullish ? (close < open and close < ifvg.bottom) : (close > open and close > ifvg.top)
+
+// ─────────────────────────────────────────────────────────────────────
 // Update BE and SL status for all active IFVGs
 // BE = First target (where to move stop to breakeven)
 // SL = Stop loss level (invalidates entry if hit)
@@ -2176,17 +2177,10 @@ update_be_status() =>
                             if low <= ifvg.be_level
                                 ifvg.be_status := "taken"
 
-                    // Check if SL has been hit (invalidates entry); the inversion candle
-                    // was already checked at creation
+                    // Check if SL has been hit (candle-close rule, see is_ifvg_stopped)
                     if ifvg.entry_valid and bar_index > ifvg.inversion_bar
-                        if ifvg.is_bullish
-                            // Bullish: Invalid if price touched or went BELOW SL level (matches creation check)
-                            if low <= ifvg.sl_level
-                                ifvg.entry_valid := false
-                        else
-                            // Bearish: Invalid if price touched or went ABOVE SL level (matches creation check)
-                            if high >= ifvg.sl_level
-                                ifvg.entry_valid := false
+                        if is_ifvg_stopped(ifvg)
+                            ifvg.entry_valid := false
 
 // ─────────────────────────────────────────────────────────────────────
 // Update DOL status for all active IFVGs
@@ -2230,16 +2224,8 @@ check_mitigations() =>
                 ifvg = array.get(g_ifvg_array, i)
 
                 if ifvg.status == "inverted"
-                    bool mitigated = false
-
-                    // Bullish IFVG Mitigation
-                    if ifvg.is_bullish
-                        if close < ifvg.bottom
-                            mitigated := true
-                    // Bearish IFVG Mitigation
-                    else
-                        if close > ifvg.top
-                            mitigated := true
+                    // Mitigated = stopped: opposite-color candle closes beyond the box
+                    bool mitigated = is_ifvg_stopped(ifvg)
 
                     if mitigated
                         if not na(ifvg.box_id)
@@ -2605,7 +2591,7 @@ render_ifvg_boxes() =>
                             string sg_text = tt_sg == 2 ? "Singular, obvious" : (tt_sg == 1 ? "Singular, small" : "Not singular")
                             string pct_text = na(ifvg.pd_pct) ? "" : (" " + str.tostring(ifvg.pd_pct) + "%")
                             string zone_text = str.upper(ifvg.pd_zone) + pct_text
-                            entry_status = ifvg.entry_valid ? "VALID" : "INVALID (SL area hit at inversion)"
+                            entry_status = ifvg.entry_valid ? "VALID" : "INVALID (SL hit)"
                             tooltip_text = "Grade: " + ifvg.grade + "\n" +
                                           "─────────────\n" +
                                           band_text + "\n" +
