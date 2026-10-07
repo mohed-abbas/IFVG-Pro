@@ -65,6 +65,18 @@ type SwingPoint
     bool is_valid       // Still valid (not broken)
     float far_close = na  // Lowest close since a swing high / highest since a swing low (tracked while pending)
 
+// Type: LRLR - Low resistance liquidity run (trendline liquidity through 3+ aligned
+// lower highs above price, or higher lows below price)
+type LRLR
+    int x1              // Bar of the origin swing (first, most extreme point)
+    float y1            // Origin price — where the run usually ends (the target)
+    int x2              // Bar of the newest swing on the line
+    float y2            // Newest swing price
+    int points          // Swings on the line
+    bool lower_highs    // true = falling line of lower highs (buyside run, long targets)
+    line line_id        // Drawn trendline
+    label label_id      // "LRLR" label
+
 // Type: Liquidity - All liquidity types (Enhanced for proper EQL/EQH)
 type Liquidity
     float level         // Price level (average of touches)
@@ -110,6 +122,7 @@ type IFVG
     int momentum_score     // 0=weak, 1=moderate, 2=strong (raw assess_momentum result)
     int singularity_score  // 0=not singular, 1=singular small, 2=singular obvious
     int target_score       // 0=no target, 1=target closer than the stop, 2=clear target (at inversion)
+    bool has_lrlr          // LRLR (trendline liquidity) in the trade's path at inversion
     int pd_pct             // IFVG midpoint as 0-100% of the dealing range at inversion (na = no range)
     box box_id          // Reference to drawn box
     label label_id      // Reference to IFVG label (tiny "IFVG" text)
@@ -217,6 +230,8 @@ i_show_ith_itl      = input.bool(true, "Show ITH/ITL", group=GROUP_LIQ,
                       tooltip="Display Internal Highs and Internal Lows")
 i_show_mitigated_liq = input.bool(false, "Show Mitigated Liquidity", group=GROUP_LIQ,
                        tooltip="Keep displaying ITH/ITL and EQH/EQL after they're mitigated (swept ✗ or broken through ⊘)")
+i_show_lrlr         = input.bool(true, "Show LRLR (Trendline Liquidity)", group=GROUP_LIQ,
+                      tooltip="Draw low resistance liquidity runs: 3+ aligned lower highs above price or higher lows below price. Detection and grading run either way.")
 
 // ─────────────────────────────────────────────────────────────────────
 // EQH/EQL Detection Settings (Enhanced)
@@ -334,6 +349,11 @@ var array<Liquidity> g_liquidity_array = array.new<Liquidity>()
 // Last swing bar turned into an ITH [0] / ITL [1] — prevents re-creating a level
 // that was already swept/broken and forgotten
 var array<int> g_last_internal_bar = array.from(-1, -1)
+// LRLR per side: 0 = lower highs (above price), 1 = higher lows (below price)
+var array<LRLR> g_lrlr = array.new<LRLR>(2)
+var array<int> g_lrlr_last_swing = array.from(-1, -1)  // newest swing bar each side was built from
+int LRLR_MIN_POINTS = 3     // Swings needed for a trendline
+float LRLR_FIT_ATR  = 0.25  // Max distance (ATR) of a middle swing from the line
 
 // Liquidity memory rules (automatic, not user settings)
 // Live levels are remembered until swept or broken, regardless of age.
@@ -1424,6 +1444,102 @@ check_liquidity_sweeps() =>
                         liq.is_decided := true
 
 // ─────────────────────────────────────────────────────────────────────
+// LRLR (trendline liquidity) — built from the chart-TF swings, no lookback setting
+// ─────────────────────────────────────────────────────────────────────
+// Trendline price at bar `b`
+lrlr_value(LRLR t, int b) =>
+    t.y1 + (t.y2 - t.y1) * (b - t.x1) / (t.x2 - t.x1)
+
+// Build the LRLR ending at the newest swing, or na
+// RULE 1: Consecutive swings ending at the newest one, each earlier swing beyond the
+//         next (higher for lower highs, lower for higher lows); at least LRLR_MIN_POINTS.
+// RULE 2: The line runs from the oldest swing that fits to the newest; every swing in
+//         between lies within LRLR_FIT_ATR × ATR of it (oldest anchor tried first).
+// RULE 3: No close beyond the line from the origin to now (otherwise the run happened).
+build_lrlr(array<SwingPoint> swings, bool lower_highs) =>
+    LRLR result = na
+    int n = array.size(swings)
+    if n >= LRLR_MIN_POINTS and not na(atr_value)
+        int start = n - 1
+        while start > 0 and (lower_highs ? array.get(swings, start - 1).price > array.get(swings, start).price : array.get(swings, start - 1).price < array.get(swings, start).price)
+            start -= 1
+        if n - start >= LRLR_MIN_POINTS
+            SwingPoint newest = array.get(swings, n - 1)
+            for a = start to n - LRLR_MIN_POINTS
+                if na(result)
+                    SwingPoint o = array.get(swings, a)
+                    LRLR cand = LRLR.new(x1 = o.bar_idx, y1 = o.price, x2 = newest.bar_idx, y2 = newest.price, points = n - a, lower_highs = lower_highs)
+                    bool fits = true
+                    for j = a + 1 to n - 2
+                        SwingPoint p = array.get(swings, j)
+                        if math.abs(p.price - lrlr_value(cand, p.bar_idx)) > atr_value * LRLR_FIT_ATR
+                            fits := false
+                    if fits
+                        bool broken = false
+                        int span = int(math.min(bar_index - o.bar_idx, 499))
+                        for k = 0 to span
+                            float lv = lrlr_value(cand, bar_index - k)
+                            if lower_highs ? close[k] > lv : close[k] < lv
+                                broken := true
+                        if not broken
+                            result := cand
+    result
+
+// Drop an LRLR and its drawings
+clear_lrlr(int side) =>
+    LRLR t = array.get(g_lrlr, side)
+    if not na(t)
+        if not na(t.line_id)
+            line.delete(t.line_id)
+        if not na(t.label_id)
+            label.delete(t.label_id)
+    array.set(g_lrlr, side, na)
+
+// Rebuild on a new swing; consume on a close through the line
+update_lrlr() =>
+    if barstate.isconfirmed
+        for side = 0 to 1
+            array<SwingPoint> swings = side == 0 ? g_swing_highs : g_swing_lows
+            if array.size(swings) > 0
+                int newest_bar = array.get(swings, array.size(swings) - 1).bar_idx
+                if newest_bar != array.get(g_lrlr_last_swing, side)
+                    array.set(g_lrlr_last_swing, side, newest_bar)
+                    LRLR built = build_lrlr(swings, side == 0)
+                    if not na(built)
+                        clear_lrlr(side)
+                        array.set(g_lrlr, side, built)
+            LRLR t = array.get(g_lrlr, side)
+            if not na(t)
+                float lv = lrlr_value(t, bar_index)
+                if side == 0 ? close > lv : close < lv
+                    clear_lrlr(side)
+
+// LRLR in the trade's path: lower highs above the entry for longs, higher lows below
+// for shorts (na if none)
+lrlr_in_path(bool is_bull, float entry) =>
+    LRLR t = array.get(g_lrlr, is_bull ? 0 : 1)
+    LRLR result = na
+    if not na(t)
+        float lv = lrlr_value(t, bar_index)
+        if is_bull ? lv > entry : lv < entry
+            result := t
+    result
+
+// Draw both LRLR lines to the current bar
+render_lrlr() =>
+    for side = 0 to 1
+        LRLR t = array.get(g_lrlr, side)
+        if not na(t)
+            if not na(t.line_id)
+                line.delete(t.line_id)
+            if not na(t.label_id)
+                label.delete(t.label_id)
+            if i_show_lrlr
+                int left_x = clamp_left_bar(t.x1)
+                t.line_id := line.new(left_x, lrlr_value(t, left_x), bar_index, lrlr_value(t, bar_index), color = i_liq_color, style = line.style_dashed, width = 1)
+                t.label_id := label.new(bar_index, lrlr_value(t, bar_index), "LRLR", style = side == 0 ? label.style_label_lower_left : label.style_label_upper_left, color = color.new(color.black, 100), textcolor = i_liq_color, size = size.tiny)
+
+// ─────────────────────────────────────────────────────────────────────
 // Create PD Internal Highs/Lows (PD_ITH/PD_ITL) — mirror of create_internal_levels()
 // scoped to g_pd_swing_highs/lows and g_pd_liquidity_array.
 // ─────────────────────────────────────────────────────────────────────
@@ -1800,17 +1916,20 @@ find_delivery(bool ifvg_is_bullish, int window_start, int extreme_off) =>
 
 // ─────────────────────────────────────────────────────────────────────
 // Score the target 0-2 (rating PDF: "targets are clear — one of these 7")
-// Score 2: any unswept EQH/EQL/ITH/ITL in the trade's direction at least as far
-//          from the entry as the stop (risk:reward >= 1)
+// Flat target = nearest unswept EQH/EQL/ITH/ITL in the trade's direction.
+// LRLR = trendline liquidity in the trade's path; its target is the origin swing.
+// Score 2: flat target at least as far as the stop (R:R >= 1), or a flat target with
+//          an LRLR on the way (confluence), or only an LRLR whose origin is that far
 // Score 1: a target exists but is closer than the stop ("reward sucks")
 // Score 0: no target
 // ─────────────────────────────────────────────────────────────────────
-score_target(Liquidity dol_target, float entry, float sl) =>
+score_target(Liquidity dol_target, LRLR lrlr, float entry, float sl) =>
     int result = 0
+    float risk = math.abs(entry - sl)
     if not na(dol_target)
-        float reward = math.abs(dol_target.level - entry)
-        float risk = math.abs(entry - sl)
-        result := reward >= risk ? 2 : 1
+        result := math.abs(dol_target.level - entry) >= risk or not na(lrlr) ? 2 : 1
+    else if not na(lrlr)
+        result := math.abs(lrlr.y1 - entry) >= risk ? 2 : 1
     result
 
 // ─────────────────────────────────────────────────────────────────────
@@ -2080,7 +2199,8 @@ check_inversions() =>
                             int singular_score = score_singularity(fvg_singular, gap_size, atr_value)
                             string ifvg_pd_zone = compute_pd_zone(s_mid)
                             int ifvg_pd_pct = compute_range_percent(s_mid)
-                            int target_score = score_target(dol, close, sl_level)
+                            LRLR path_lrlr = lrlr_in_path(ifvg_is_bullish, close)
+                            int target_score = score_target(dol, path_lrlr, close, sl_level)
                             string grade = calculate_grade(has_sweep, has_delivery, not str.startswith(delivery_src, "same TF"), momentum_score, target_score, singular_score, ifvg_pd_zone, ifvg_pd_pct, ifvg_is_bullish)
 
                             // Create IFVG
@@ -2109,6 +2229,7 @@ check_inversions() =>
                                 momentum_score = momentum_score,
                                 singularity_score = singular_score,
                                 target_score = target_score,
+                                has_lrlr = not na(path_lrlr),
                                 pd_pct = ifvg_pd_pct,
                                 box_id = na,
                                 label_id = na,
@@ -2571,7 +2692,7 @@ render_ifvg_boxes() =>
                             string sweep_text = ifvg.sweep_reclaimed ? "Sweep (closed through, reclaimed)" : "Sweep"
                             string band_text = ifvg.has_sweep and ifvg.has_delivery ? sweep_text + " + Delivery (" + ifvg.delivery_src + ") (A+ band)" : (ifvg.has_sweep ? sweep_text + " only (A band)" : (ifvg.has_delivery ? "Delivery (" + ifvg.delivery_src + ") only (A band)" : "No sweep or delivery (B band)"))
                             string mom_text = tt_mom == 2 ? "Strong, no chop" : (tt_mom == 0 ? "Weak / choppy" : "Some chop")
-                            string tgt_text = tt_tgt == 2 ? "Clear" : (tt_tgt == 1 ? "Closer than stop" : "None")
+                            string tgt_text = (tt_tgt == 2 ? "Clear" : (tt_tgt == 1 ? "Closer than stop" : "None")) + (ifvg.has_lrlr ? " + LRLR" : "")
                             string dol_text = not na(ifvg.dol) ? (" (now " + ifvg.dol.liq_type + " @ " + str.tostring(ifvg.dol.level, format.mintick) + ")") : ""
                             string sg_text = tt_sg == 2 ? "Singular, obvious" : (tt_sg == 1 ? "Singular, small" : "Not singular")
                             string pct_text = na(ifvg.pd_pct) ? "" : (" " + str.tostring(ifvg.pd_pct) + "%")
@@ -3106,6 +3227,7 @@ if i_show_indicator
     check_equal_lows()
     create_internal_levels()
     cleanup_liquidity_array()
+    update_lrlr()
 
     // ─────────────────────────────────────────────────────────────────
     // Step 3: Check for liquidity sweeps
@@ -3569,6 +3691,7 @@ if i_show_indicator
             render_htf_ifvg_boxes(g_htf2_ifvg_array, htf2_label)
 
     render_liquidity_lines()
+    render_lrlr()
     render_dealing_range(g_current_range)
     render_dashboard(current_latest_ifvg)
 
