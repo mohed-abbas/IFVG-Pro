@@ -95,9 +95,9 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 | PD leg = oldest unbroken extreme with intact leg, start since price was last beyond it, running far end; cached per PD swing (2026-10-07) | Daily range stuck at 100%, bounces became the range, per-bar search timed out | ✓ Good |
 | Multi-candle sweeps count: move's extreme at/after the sweep candle, no close beyond the level until inversion (verified 2026-10-07) | Raids where one candle sweeps and a later one makes the top were shown as "Delivery only" | ✓ Good |
 | A series of gaps grades lower than a single FVG (not singular, own gaps not delivery); detection-time FVG merge kept (2026-10-07) | Strategy favours singular FVGs; removing the merge would drop back-to-back gaps a grade | ✓ Good |
-| Grade = rating-PDF bands: sweep/delivery sets the starting grade, momentum/target/singularity/PD/chart-TF delivery step it down (2026-10-07) | A setup with no sweep or delivery could reach A on the 0-10 total | — Pending |
-| Broken level reclaimed within 3 closes counts as a setup sweep (2026-10-07) | Same raid was a sweep on 3m and "broken" on 1m | — Pending |
-| SL hit only on opposite-color close beyond the IFVG box (2026-10-07) | Wicks to the SL line invalidated good setups | — Pending |
+| Grade = rating-PDF bands: sweep/delivery sets the starting grade, momentum/target/singularity/PD/chart-TF delivery step it down (2026-10-07) | A setup with no sweep or delivery could reach A on the 0-10 total | ✓ Good |
+| Broken level reclaimed within 3 closes counts as a setup sweep (2026-10-07) | Same raid was a sweep on 3m and "broken" on 1m | ✓ Good |
+| SL hit only on opposite-color close beyond the IFVG box (2026-10-07) | Wicks to the SL line invalidated good setups | ✓ Good |
 | Delivery = turn tapped an active same-direction FVG formed before the turn; HTF first, chart TF one step lower (2026-10-07) | Old check used the opposite direction and no tap | ✓ Good |
 | barstate.isconfirmed only | Prevents repainting — critical for trading decisions | ✓ Good |
 | HTF swing-based PD zones over daily range | More accurate ICT dealing range concept | — Pending |

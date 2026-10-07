@@ -168,7 +168,7 @@ Two FVGs at completely different price levels got merged just because they were 
 
 ## Issue 8: Grading System Remodel
 
-**Status:** In progress (2026-10-07). Delivery verified on TradingView; grading bands, reclaimed sweeps and the SL rule committed and under testing. Still open: news-candle ("Data") highs/lows and trendline (LRLR) targets.
+**Status:** In progress (2026-10-07). Delivery, grading bands, reclaimed sweeps and the SL rule verified on TradingView. Still open: news-candle ("Data") highs/lows and trendline (LRLR) targets.
 **Affected Code:** `calculate_grade()`, `score_target()`, `check_setup_sweep()`, `fvg_delivered()` / `find_delivery()`, `is_ifvg_stopped()` (Sections 7-9)
 
 **Description:** The current grading system has several misunderstandings and needs a complete remodel. To be tackled after all other issues are resolved, with discussion to align on the desired grading logic.
