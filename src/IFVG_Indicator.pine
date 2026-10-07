@@ -102,11 +102,14 @@ type IFVG
     string sl_type      // "strong" (setup's own high/low) or "fvg_boundary"
     Liquidity dol       // Draw on Liquidity (target)
     bool has_sweep      // Liquidity sweep present
+    bool sweep_reclaimed // true when the sweep closed through the level and got back (no wick-only sweep)
     string momentum     // "strong_no_chop", "neutral", "weak_or_choppy"
     bool has_delivery   // true if delivery from prior FVG detected (per D-01)
     string pd_zone      // "premium", "discount", "equilibrium", "neutral"
     int momentum_score     // 0=weak, 1=moderate, 2=strong (raw assess_momentum result)
     int singularity_score  // 0=not singular, 1=singular small, 2=singular obvious
+    int target_score       // 0=no target, 1=target closer than the stop, 2=clear target (at inversion)
+    int pd_pct             // IFVG midpoint as 0-100% of the dealing range at inversion (na = no range)
     box box_id          // Reference to drawn box
     label label_id      // Reference to IFVG label (tiny "IFVG" text)
     line be_line_id     // Reference to BE line
@@ -337,6 +340,7 @@ var array<int> g_last_internal_bar = array.from(-1, -1)
 int LIQ_MEMORY_MAX          = 200  // Hard cap on remembered levels
 int LIQ_MITIGATED_KEEP_BARS = 500  // Matches max_bars_back (sweep window limit)
 int LIQ_DRAW_PER_SIDE       = 3    // Live levels drawn above and below price (per strong/weak group)
+int SWEEP_MAX_CLOSES_BEYOND = 3    // Closes beyond a level a setup sweep may have before getting back
 
 // PD zone state (Phase 2)
 var array<SwingPoint> g_pd_swing_highs = array.new<SwingPoint>()
@@ -1619,17 +1623,20 @@ find_dol(bool is_bullish_ifvg, float current_price) =>
 
 // ─────────────────────────────────────────────────────────────────────
 // Check if a liquidity sweep CAUSED this setup's reversal (no bar-count setting)
-// RULE 1: Sweep must occur inside the setup's own move — from FVG formation
-//         (window_start) up to and including the inversion candle (current bar).
+// Returns 0 = no sweep, 1 = wick sweep, 2 = closed through and reclaimed
+// RULE 1: The level was taken (wick-swept or broken by a close) inside the setup's
+//         own move — from FVG formation (window_start) up to the inversion candle.
 // RULE 2: The move's extreme (highest high for BSL / lowest low for SSL) is on the
-//         sweep candle or after it — a multi-candle raid where one candle sweeps the
-//         level and a later one makes the top/bottom still counts.
-// RULE 3: No candle closed beyond the level from the sweep up to the inversion
-//         (the raid failed; price did not accept above/below the level).
+//         taking candle or after it — a multi-candle raid still counts.
+// RULE 3: No candle closed beyond the level after the move's extreme (price got back
+//         and stayed back), so the inversion candle closes on the right side.
+// RULE 4: At most 3 candles closed beyond the level in total. A short close-through on
+//         the chart TF is a wick on a higher TF; longer acceptance is a real break.
+// NOTE: The level keeps its broken (⊘) state on the chart; this only credits the setup.
 // NOTE: Window is capped at 499 bars by max_bars_back=500.
 // ─────────────────────────────────────────────────────────────────────
 check_setup_sweep(bool looking_for_bsl, int window_start) =>
-    bool result = false
+    int result = 0
     int span = int(math.min(bar_index - window_start, 499))
     if span >= 0
         // Extreme of the move across the window and its bar offset (oldest wins on ties)
@@ -1645,16 +1652,20 @@ check_setup_sweep(bool looking_for_bsl, int window_start) =>
             for i = 0 to arr_size - 1
                 liq = array.get(g_liquidity_array, i)
                 bool side_match = looking_for_bsl ? (liq.liq_type == "EQH" or liq.liq_type == "ITH") : (liq.liq_type == "EQL" or liq.liq_type == "ITL")
-                int sweep_offset = bar_index - liq.swept_bar
-                if not result and liq.is_swept and side_match and sweep_offset >= 0 and sweep_offset <= span
-                    if extreme_off <= sweep_offset
-                        bool accepted = false
-                        if sweep_offset > 0
-                            for k = 0 to sweep_offset - 1
-                                if looking_for_bsl ? close[k] > liq.level : close[k] < liq.level
-                                    accepted := true
-                        if not accepted
-                            result := true
+                bool taken = liq.is_swept or (not liq.is_valid and not na(liq.mitigated_bar))
+                if result != 1 and side_match and taken
+                    int take_bar = liq.is_swept ? liq.swept_bar : liq.mitigated_bar
+                    int take_offset = bar_index - take_bar
+                    if take_offset >= 0 and take_offset <= span and extreme_off <= take_offset
+                        int closes_beyond = 0
+                        bool closed_after_extreme = false
+                        for k = 0 to take_offset
+                            if looking_for_bsl ? close[k] > liq.level : close[k] < liq.level
+                                closes_beyond += 1
+                                if k < extreme_off
+                                    closed_after_extreme := true
+                        if not closed_after_extreme and closes_beyond <= SWEEP_MAX_CLOSES_BEYOND
+                            result := closes_beyond == 0 ? 1 : 2
     result
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1803,18 +1814,18 @@ check_delivery_from_fvg(bool ifvg_is_bullish, int window_start) =>
     result
 
 // ─────────────────────────────────────────────────────────────────────
-// Score target clarity (DOL quality) 0-2 per D-05 criterion 3
-// Score 2: clear DOL (perfect quality or multi-touch)
-// Score 1: weak target (single-touch relative quality)
-// Score 0: no DOL target found
+// Score the target 0-2 (rating PDF: "targets are clear — one of these 7")
+// Score 2: any unswept EQH/EQL/ITH/ITL in the trade's direction at least as far
+//          from the entry as the stop (risk:reward >= 1)
+// Score 1: a target exists but is closer than the stop ("reward sucks")
+// Score 0: no target
 // ─────────────────────────────────────────────────────────────────────
-score_target_clarity(Liquidity dol_target) =>
+score_target(Liquidity dol_target, float entry, float sl) =>
     int result = 0
     if not na(dol_target)
-        if dol_target.quality == "perfect" or dol_target.touch_count >= 2
-            result := 2
-        else
-            result := 1
+        float reward = math.abs(dol_target.level - entry)
+        float risk = math.abs(entry - sl)
+        result := reward >= risk ? 2 : 1
     result
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1837,8 +1848,6 @@ score_singularity(bool is_singular, float fvg_size, float atr_val) =>
 // Score 2: correct zone (bullish in discount, bearish in premium)
 // Score 1: neutral/equilibrium or no dealing range detected
 // Score 0: wrong zone (bullish in premium, bearish in discount)
-// NOTE: Until PD zone detection is re-implemented, pd_zone is always
-// "neutral" so this always returns 1, making A+ unreachable via D-06.
 // ─────────────────────────────────────────────────────────────────────
 score_pd_zone(string pd_zone, bool ifvg_is_bullish) =>
     int result = 1
@@ -1849,43 +1858,56 @@ score_pd_zone(string pd_zone, bool ifvg_is_bullish) =>
     result
 
 // ─────────────────────────────────────────────────────────────────────
-// Full grading algorithm — checklist scoring per D-05, D-06, D-07
-// Five criteria each scored 0-2, total 0-10
-// A+ hard gates: sweep_delivery=2 AND pd_score=2 AND total>=9
+// True when the setup is far into the wrong half of the range
+// (long in the top quarter, short in the bottom quarter)
 // ─────────────────────────────────────────────────────────────────────
-calculate_grade(bool has_sweep, bool has_delivery, int momentum_score, Liquidity dol_target, int singularity_score, string pd_zone, bool ifvg_is_bullish) =>
-    // ── Criterion 1: Sweep + Delivery (0-2) per D-05 ──
-    int sweep_delivery_score = 0
-    if has_sweep and has_delivery
-        sweep_delivery_score := 2
-    else if has_sweep or has_delivery
-        sweep_delivery_score := 1
-    // ── Criterion 2: Momentum (0-2) — already scored by assess_momentum() ──
-    // momentum_score is 0, 1, or 2 directly
-    // ── Criterion 3: Target Clarity (0-2) ──
-    int target_score = score_target_clarity(dol_target)
-    // ── Criterion 4: FVG Singularity (0-2) — use pre-computed score ──
-    int singular_score = singularity_score
-    // ── Criterion 5: PD Zone (0-2) per D-09 ──
+is_far_wrong_zone(int pd_pct, bool ifvg_is_bullish) =>
+    bool result = false
+    if not na(pd_pct)
+        result := ifvg_is_bullish ? pd_pct >= 75 : pd_pct <= 25
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Grading per the rating PDF: sweep/delivery sets the band, the other four
+// criteria step the grade down inside it.
+// Ladder: 0=A+ 1=A 2=A- 3=B+ 4=B 5=B- 6=C
+// RULE 1: Sweep AND delivery → starts at A+. A+ needs strong momentum, a clear
+//         target, a singular FVG and the correct PD zone; floor B.
+// RULE 2: Sweep OR delivery → starts at A; floor B.
+//         One step down for each: momentum moderate (1) / weak (2), not singular,
+//         target closer than the stop, wrong PD zone.
+// RULE 3: Neither → starts at B; floor B-. Steps: weak momentum, target closer
+//         than the stop (wrong zone and a non-obvious gap are normal for B).
+// RULE 4: No target → at most B-.
+// RULE 5: Neither AND far in the wrong zone → C ("way too high/low", no bias).
+// ─────────────────────────────────────────────────────────────────────
+calculate_grade(bool has_sweep, bool has_delivery, int momentum_score, int target_score, int singularity_score, string pd_zone, int pd_pct, bool ifvg_is_bullish) =>
     int pd_score = score_pd_zone(pd_zone, ifvg_is_bullish)
-    // ── Total Score (0-10) ──
-    int total = sweep_delivery_score + momentum_score + target_score + singular_score + pd_score
-    // ── Grade Mapping per D-05, D-07 ──
+    int idx = 4
+    if has_sweep or has_delivery
+        int steps = (2 - momentum_score) + (singularity_score == 0 ? 1 : 0) + (target_score == 1 ? 1 : 0) + (pd_score == 0 ? 1 : 0)
+        if has_sweep and has_delivery
+            // A+ also needs the correct zone; neutral/equilibrium is one step
+            if steps == 0 and pd_score == 1
+                steps := 1
+            idx := int(math.min(steps, 4))
+        else
+            idx := int(math.min(1 + steps, 4))
+    else
+        int steps = (momentum_score == 0 ? 1 : 0) + (target_score == 1 ? 1 : 0)
+        idx := int(math.min(4 + steps, 5))
+        if is_far_wrong_zone(pd_pct, ifvg_is_bullish)
+            idx := 6
+    if target_score == 0
+        idx := int(math.max(idx, 5))
     string result = "C"
-    // A+ hard gates per D-06: sweep_delivery=2 AND pd_score=2 AND total>=9
-    if total >= 9 and sweep_delivery_score == 2 and pd_score == 2
-        result := "A+"
-    else if total >= 7
-        result := "A"
-    else if total == 6
-        result := "A-"
-    else if total == 5
-        result := "B+"
-    else if total >= 3
-        result := "B"
-    else if total == 2
-        result := "B-"
-    // else total 0-1 stays "C"
+    switch idx
+        0 => result := "A+"
+        1 => result := "A"
+        2 => result := "A-"
+        3 => result := "B+"
+        4 => result := "B"
+        5 => result := "B-"
     result
 
 // ══════════════════════════════════════════════════════════════════════
@@ -2060,7 +2082,8 @@ check_inversions() =>
                             Liquidity dol = find_dol(ifvg_is_bullish, close)
 
                             // Check for a sweep inside this setup's move (FVG formation → inversion)
-                            bool has_sweep = check_setup_sweep(not ifvg_is_bullish, s_start)
+                            int sweep_kind = check_setup_sweep(not ifvg_is_bullish, s_start)
+                            bool has_sweep = sweep_kind > 0
 
                             // Check delivery from prior FVG (per D-01)
                             // Delivery window starts at the swing the move into the setup came from
@@ -2074,12 +2097,14 @@ check_inversions() =>
                             // Map int score to string for backward compatibility (until Plan 03 rewrites rendering)
                             string momentum_str = momentum_score == 2 ? "strong_no_chop" : (momentum_score == 0 ? "weak_or_choppy" : "neutral")
 
-                            // Calculate grade (checklist scoring per D-05, D-06, D-07)
+                            // Calculate grade (rating PDF bands, see calculate_grade)
                             bool fvg_singular = series_count == 1 and is_fvg_singular(fvg)
                             float gap_size = s_top - s_bottom
                             int singular_score = score_singularity(fvg_singular, gap_size, atr_value)
                             string ifvg_pd_zone = compute_pd_zone(s_mid)
-                            string grade = calculate_grade(has_sweep, has_delivery, momentum_score, dol, singular_score, ifvg_pd_zone, ifvg_is_bullish)
+                            int ifvg_pd_pct = compute_range_percent(s_mid)
+                            int target_score = score_target(dol, close, sl_level)
+                            string grade = calculate_grade(has_sweep, has_delivery, momentum_score, target_score, singular_score, ifvg_pd_zone, ifvg_pd_pct, ifvg_is_bullish)
 
                             // Create IFVG
                             new_ifvg = IFVG.new(
@@ -2099,11 +2124,14 @@ check_inversions() =>
                                 sl_type = sl_type_used,
                                 dol = dol,
                                 has_sweep = has_sweep,
+                                sweep_reclaimed = sweep_kind == 2,
                                 momentum = momentum_str,
                                 has_delivery = has_delivery,
                                 pd_zone = ifvg_pd_zone,
                                 momentum_score = momentum_score,
                                 singularity_score = singular_score,
+                                target_score = target_score,
+                                pd_pct = ifvg_pd_pct,
                                 box_id = na,
                                 label_id = na,
                                 be_line_id = na,
@@ -2564,30 +2592,32 @@ render_ifvg_boxes() =>
                                 width = 2
                             )
 
-                            // Build tooltip with 5-criterion scoring breakdown
-                            int tt_sd = (ifvg.has_sweep and ifvg.has_delivery) ? 2 : ((ifvg.has_sweep or ifvg.has_delivery) ? 1 : 0)
+                            // Build tooltip with the grading checklist (values at inversion)
                             int tt_mom = ifvg.momentum_score
-                            int tt_tgt = score_target_clarity(ifvg.dol)
+                            int tt_tgt = ifvg.target_score
                             int tt_sg = ifvg.singularity_score
                             int tt_pd = score_pd_zone(ifvg.pd_zone, ifvg.is_bullish)
-                            int tt_total = tt_sd + tt_mom + tt_tgt + tt_sg + tt_pd
-                            string sd_detail = ifvg.has_sweep and ifvg.has_delivery ? "Sweep+Delivery" : (ifvg.has_sweep ? "Sweep only" : (ifvg.has_delivery ? "Delivery only" : "Neither"))
-                            string mom_text = ifvg.momentum == "strong_no_chop" ? "Strong" : (ifvg.momentum == "weak_or_choppy" ? "Weak" : "Moderate")
-                            string dol_text = not na(ifvg.dol) ? (ifvg.dol.liq_type + " @ " + str.tostring(ifvg.dol.level, format.mintick)) : "None"
-                            string zone_text = str.upper(ifvg.pd_zone)
-                            entry_status = ifvg.entry_valid ? "VALID" : "INVALID"
-                            tooltip_text = "Grade: " + ifvg.grade + " (at inversion) | Now: " + str.tostring(tt_total) + "/10\n" +
+                            string sweep_text = ifvg.sweep_reclaimed ? "Sweep (closed through, reclaimed)" : "Sweep"
+                            string band_text = ifvg.has_sweep and ifvg.has_delivery ? sweep_text + " + Delivery (A+ band)" : (ifvg.has_sweep ? sweep_text + " only (A band)" : (ifvg.has_delivery ? "Delivery only (A band)" : "No sweep or delivery (B band)"))
+                            string mom_text = tt_mom == 2 ? "Strong, no chop" : (tt_mom == 0 ? "Weak / choppy" : "Some chop")
+                            string tgt_text = tt_tgt == 2 ? "Clear" : (tt_tgt == 1 ? "Closer than stop" : "None")
+                            string dol_text = not na(ifvg.dol) ? (" (now " + ifvg.dol.liq_type + " @ " + str.tostring(ifvg.dol.level, format.mintick) + ")") : ""
+                            string sg_text = tt_sg == 2 ? "Singular, obvious" : (tt_sg == 1 ? "Singular, small" : "Not singular")
+                            string pct_text = na(ifvg.pd_pct) ? "" : (" " + str.tostring(ifvg.pd_pct) + "%")
+                            string zone_text = str.upper(ifvg.pd_zone) + pct_text
+                            entry_status = ifvg.entry_valid ? "VALID" : "INVALID (SL area hit at inversion)"
+                            tooltip_text = "Grade: " + ifvg.grade + "\n" +
                                           "─────────────\n" +
-                                          "[" + str.tostring(tt_sd) + "] " + sd_detail + "\n" +
+                                          band_text + "\n" +
                                           "[" + str.tostring(tt_mom) + "] Momentum: " + mom_text + "\n" +
-                                          "[" + str.tostring(tt_tgt) + "] Target: " + dol_text + "\n" +
-                                          "[" + str.tostring(tt_sg) + "] Singularity\n" +
+                                          "[" + str.tostring(tt_tgt) + "] Target: " + tgt_text + dol_text + "\n" +
+                                          "[" + str.tostring(tt_sg) + "] FVG: " + sg_text + "\n" +
                                           "[" + str.tostring(tt_pd) + "] Zone: " + zone_text + "\n" +
                                           "─────────────\n" +
                                           "Entry: " + entry_status
-                            // Entry line label: Grade + Direction
+                            // Entry line label: Grade + Direction (+ invalid mark)
                             direction_text = ifvg.is_bullish ? "BUY" : "SELL"
-                            entry_label_text = ifvg.grade + " " + direction_text
+                            entry_label_text = ifvg.grade + " " + direction_text + (ifvg.entry_valid ? "" : " (invalid)")
 
                             ifvg.entry_label_id := label.new(
                                 x = right_edge,
