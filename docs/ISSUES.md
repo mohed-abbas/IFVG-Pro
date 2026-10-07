@@ -168,8 +168,8 @@ Two FVGs at completely different price levels got merged just because they were 
 
 ## Issue 8: Grading System Remodel
 
-**Status:** Done early in Phase 5 (5-criterion scoring); full remodel still pending
-**Affected Code:** `calculate_grade()`, grading inputs (Section 7-8)
+**Status:** In progress (2026-10-07). Delivery verified on TradingView; grading bands, reclaimed sweeps and the SL rule committed and under testing. Still open: news-candle ("Data") highs/lows and trendline (LRLR) targets.
+**Affected Code:** `calculate_grade()`, `score_target()`, `check_setup_sweep()`, `fvg_delivered()` / `find_delivery()`, `is_ifvg_stopped()` (Sections 7-9)
 
 **Description:** The current grading system has several misunderstandings and needs a complete remodel. To be tackled after all other issues are resolved, with discussion to align on the desired grading logic.
 
@@ -178,6 +178,14 @@ Two FVGs at completely different price levels got merged just because they were 
 - Series of gaps (Issue 7): keep the current grading. A series is never "singular" and its own gaps don't count as "delivery", so it grades lower than a single FVG ("usually only trade singular FVGs").
 - Consequence: `merge_with_existing_fvg()` stays. Removing it would drop back-to-back gaps (e.g. the HTF A SELL example) a grade, since merged gaps count as one singular FVG.
 - If this logic is ever revisited: changing series grading and removing the merge must be decided together.
+
+**Remodel decisions (2026-10-07):**
+- **Grade bands (rating PDF):** sweep + delivery starts at A+, sweep or delivery at A (both floor B); neither starts at B (floor B-). One step down each for: some chop (two for weak), not singular, target closer than the stop, wrong PD zone, delivery only from a chart-TF FVG. A+ also needs the correct zone (neutral = one step). No target → at most B-. Neither band and far in the wrong zone (long ≥ 75%, short ≤ 25%) → C. Far wrong zone alone does not give C (PDF A- example).
+- **Target:** any unswept EQH/EQL/ITH/ITL in the trade's direction; clear (2) when at least as far as the stop (R:R ≥ 1), else 1. Stored at inversion; the tooltip no longer recomputes a live score.
+- **Reclaimed sweeps (#55/#56):** a level broken by a close during the setup's move still counts as a sweep if the move's extreme came at/after the break, nothing closed beyond it after the extreme, and at most 3 candles closed beyond it (`SWEEP_MAX_CLOSES_BEYOND`). Tooltip says "Sweep (closed through, reclaimed)". The level stays drawn as broken.
+- **Invalid entries:** keep the grade, label shows "(invalid)".
+- **SL hit:** only an opposite-color candle closing beyond the IFVG box (sell candle below for longs, buy candle above for shorts). Wicks never stop the setup. Stopped = mitigated (removed) in the same event.
+- **Delivery (#57, #60):** price turned from an active FVG in the setup's direction (bullish FVG below for longs, bearish above for shorts) that existed before the setup's extreme; the extreme's wick reached into it; no chart-TF close beyond its far edge. Checked HTF1 → HTF2 → chart TF; chart-TF delivery costs one step (max A with a sweep). PD zone alone is never delivery. Tooltip shows the source TF and price range. The old check looked for the opposite direction and never required a tap.
 
 ---
 
