@@ -161,6 +161,7 @@ Two FVGs at completely different price levels got merged just because they were 
 - The setup fires only when a body closes through the whole series: one combined IFVG box, one entry, one grade, one alert. Sweep/BE/SL/PD use the combined zone; a series is never "singular".
 - A gap formed later inside an older zone (e.g. during a pullback) stays a standalone setup.
 - Root cause of partial series: "Max Active FVGs to Track" (default 3) evicted the top gaps of a series before price returned. FVG memory is now fixed at 50; the input is renamed "Max Active FVGs to Show" and only limits drawn boxes (same position, no reset needed).
+- HTF (2026-10-07): the same rule runs in `check_htf_inversions()` using HTF candle colors (added to the existing HTF security tuples); HTF FVG memory raised from 3 to 50, drawn boxes capped by "Max Active FVGs to Show".
 - Considered and rejected: whole-leg grouping (too strict), "pullback wick into the earlier gap ends the series" (split one push on small wicks), price-overlap grouping (user: nested gaps are standalone).
 
 ---

@@ -91,6 +91,7 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 | SL at the setup's own high/low (first FVG → inversion), replacing "most recent Strong level" (2026-10-06) | Setup's swing isn't Strong yet at entry, so older far-away Strong levels were picked | ✓ Good |
 | Momentum scored by chop through the IFVG (candles from first zone touch to inversion), no fixed lookback (2026-10-06) | Strategy grades "no chop through the IFVG"; old check looked at a fixed 5 bars | ✓ Good |
 | Label lanes: PD above-right, liquidity below-right, entry above-left, IFVG tag inside box; near-equal liquidity levels share one label (2026-10-07) | Labels overlapped (EQH on PD 1.0, Strong High on entry, IFVG on entry) | ✓ Good |
+| Series of gaps also on HTF FVGs (HTF candle colors from the existing security calls); HTF FVG memory 50, display capped by "Max Active FVGs" (2026-10-07) | Same per-gap early inversion and 3-FVG eviction existed on HTF | ✓ Good |
 | barstate.isconfirmed only | Prevents repainting — critical for trading decisions | ✓ Good |
 | HTF swing-based PD zones over daily range | More accurate ICT dealing range concept | — Pending |
 | Hybrid grading (tier + quality score) | Separates mandatory criteria from quality modifiers | ✓ Good |

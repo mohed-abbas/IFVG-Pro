@@ -54,6 +54,7 @@ type FVG
     string timeframe    // Source timeframe ("" for current)
     box box_id          // Reference to drawn box
     label label_id      // Reference to label
+    int htf_end = na    // HTF bar_index of candle 3 (HTF FVGs only; used for series of gaps)
 
 // Type: SwingPoint - For structure-based liquidity detection
 type SwingPoint
@@ -762,11 +763,11 @@ detect_fvg() =>
 // ─────────────────────────────────────────────────────────────────────
 // request.security budget: 3 calls used pre-Phase-2; 4 calls / 16 tuple elements after Phase 2 PD pivots (D-01)
 // HTF 1 Data - Consolidated tuple (7 elements)
-[htf_high, htf_low, htf_close, htf_high_2, htf_low_2, htf_bar_idx_raw, htf_atr] = request.security(syminfo.tickerid, i_htf_timeframe, [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period)], lookahead = barmerge.lookahead_off)
+[htf_high, htf_low, htf_close, htf_high_2, htf_low_2, htf_bar_idx_raw, htf_atr, htf_prev_col] = request.security(syminfo.tickerid, i_htf_timeframe, [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period), math.sign(close[1] - open[1])], lookahead = barmerge.lookahead_off)
 int htf_bar_idx = int(htf_bar_idx_raw)
 
 // HTF 2 Data - Consolidated tuple (7 elements)
-[htf2_high, htf2_low, htf2_close, htf2_high_2, htf2_low_2, htf2_bar_idx_raw, htf2_atr] = request.security(syminfo.tickerid, i_htf_timeframe_2, [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period)], lookahead = barmerge.lookahead_off)
+[htf2_high, htf2_low, htf2_close, htf2_high_2, htf2_low_2, htf2_bar_idx_raw, htf2_atr, htf2_prev_col] = request.security(syminfo.tickerid, i_htf_timeframe_2, [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period), math.sign(close[1] - open[1])], lookahead = barmerge.lookahead_off)
 int htf2_bar_idx = int(htf2_bar_idx_raw)
 
 // ─── PD timeframe swing data (Phase 2 — PDZ-01) ─────────────
@@ -844,6 +845,25 @@ bool htf_bar_changed = na(prev_htf_bar) or htf_bar_idx != prev_htf_bar
 bool htf2_bar_changed = na(prev_htf2_bar) or htf2_bar_idx != prev_htf2_bar
 prev_htf_bar := htf_bar_idx
 prev_htf2_bar := htf2_bar_idx
+
+// HTF candle colors (1 = up, -1 = down, 0 = doji) by HTF bar_index, recorded when each
+// HTF bar closes. Used by the series-of-gaps rule on HTF FVGs.
+var array<int> g_htf_col_bar = array.new<int>()
+var array<int> g_htf_col = array.new<int>()
+var array<int> g_htf2_col_bar = array.new<int>()
+var array<int> g_htf2_col = array.new<int>()
+if htf_bar_changed and not na(htf_prev_col)
+    array.push(g_htf_col_bar, htf_bar_idx - 1)
+    array.push(g_htf_col, int(htf_prev_col))
+    if array.size(g_htf_col_bar) > 200
+        array.shift(g_htf_col_bar)
+        array.shift(g_htf_col)
+if htf2_bar_changed and not na(htf2_prev_col)
+    array.push(g_htf2_col_bar, htf2_bar_idx - 1)
+    array.push(g_htf2_col, int(htf2_prev_col))
+    if array.size(g_htf2_col_bar) > 200
+        array.shift(g_htf2_col_bar)
+        array.shift(g_htf2_col)
 
 // ─────────────────────────────────────────────────────────────────────
 // Detect HTF Fair Value Gaps
@@ -926,79 +946,114 @@ cleanup_htf_ifvg_array(array<IFVG> arr, int max_count) =>
             label.delete(old_ifvg.label_id)
 
 // ─────────────────────────────────────────────────────────────────────
-// Check HTF FVG inversions (simplified - no full grading)
+// HTF candle color recorded for an HTF bar (1 up, -1 down, 0 doji; na if unknown)
 // ─────────────────────────────────────────────────────────────────────
-check_htf_inversions(array<FVG> fvg_arr, array<IFVG> ifvg_arr, float htf_c, string tf) =>
+htf_color_at(array<int> col_bars, array<int> cols, int htf_bar) =>
+    int result = na
+    int n = array.size(col_bars)
+    if n > 0
+        for i = n - 1 to 0
+            int b = array.get(col_bars, i)
+            if b == htf_bar
+                result := array.get(cols, i)
+            if b <= htf_bar
+                break
+    result
+
+// ─────────────────────────────────────────────────────────────────────
+// Check HTF FVG inversions (simplified - no full grading)
+// Series of gaps (strategy 7.1) as on the chart timeframe: same-direction HTF FVGs made
+// by one unbroken run of HTF displacement candles are one zone, inverted only when the
+// HTF close is through ALL of them. Candles between two HTF FVG windows must all be the
+// move's color (dojis neutral); an opposite-color or unknown HTF candle ends the series.
+// ─────────────────────────────────────────────────────────────────────
+check_htf_inversions(array<FVG> fvg_arr, array<IFVG> ifvg_arr, float htf_c, string tf, array<int> col_bars, array<int> cols) =>
     int fvg_size = array.size(fvg_arr)
     if barstate.isconfirmed and fvg_size > 0 and not na(htf_c)
         for i = fvg_size - 1 to 0
-            if i >= 0 and i < array.size(fvg_arr)
-                fvg = array.get(fvg_arr, i)
-
-                if fvg.status == "active"
-                    fvg_age = bar_index - fvg.end_bar
-
-                    if fvg_age >= 1
-                        bool inverted = false
-
-                        // Bullish FVG Inversion: body closes below
-                        if fvg.is_bullish
-                            if htf_c < fvg.bottom
-                                inverted := true
-
-                        // Bearish FVG Inversion: body closes above
-                        else
-                            if htf_c > fvg.top
-                                inverted := true
-
-                        if inverted
-                            fvg.status := "inverted"
-
-                            // Delete FVG drawings
-                            if not na(fvg.box_id)
-                                box.delete(fvg.box_id)
-                            if not na(fvg.label_id)
-                                label.delete(fvg.label_id)
-
-                            // IFVG direction is INVERTED from FVG
-                            bool ifvg_is_bullish = not fvg.is_bullish
-
-                            // Create simplified HTF IFVG (no grading needed for bias)
-                            new_ifvg = IFVG.new(
-                                top = fvg.top,
-                                bottom = fvg.bottom,
-                                mid = fvg.mid,
-                                start_bar = fvg.start_bar,
-                                inversion_bar = bar_index,
-                                inversion_close = htf_c,
-                                is_bullish = ifvg_is_bullish,
-                                status = "inverted",
-                                grade = "HTF",  // Mark as HTF
-                                entry_valid = true,
-                                be_level = ifvg_is_bullish ? fvg.top : fvg.bottom,
-                                be_status = "intact",
-                                sl_level = ifvg_is_bullish ? fvg.bottom : fvg.top,
-                                sl_type = "fvg_boundary",
-                                dol = na,
-                                has_sweep = false,
-                                momentum = "neutral",
-                                has_delivery = false,
-                                pd_zone = "neutral",
-                                momentum_score = 0,
-                                singularity_score = 0,
-                                box_id = na,
-                                label_id = na,
-                                be_line_id = na,
-                                sl_line_id = na,
-                                entry_line_id = na,
-                                entry_label_id = na,
-                                formation_divider_id = na
-                            )
-
-                            array.push(ifvg_arr, new_ifvg)
-
-                            // Remove from FVG array
-                            array.remove(fvg_arr, i)
+            fvg = array.get(fvg_arr, i)
+            if fvg.status == "active" and bar_index - fvg.end_bar >= 1
+                bool inverted = fvg.is_bullish ? htf_c < fvg.bottom : htf_c > fvg.top
+                float s_top = fvg.top
+                float s_bottom = fvg.bottom
+                int s_start = fvg.start_bar
+                int s_htf_start = na(fvg.htf_end) ? na : fvg.htf_end - 2
+                if inverted and i > 0 and not na(s_htf_start)
+                    bool chain_open = true
+                    for j = i - 1 to 0
+                        FVG other = array.get(fvg_arr, j)
+                        bool candidate = (chain_open and other.status == "active" and other.is_bullish == fvg.is_bullish and not na(other.htf_end) and other.htf_end - 2 < s_htf_start)
+                        if candidate
+                            bool pause = false
+                            int from_b = other.htf_end + 1
+                            int to_b = s_htf_start - 1
+                            if to_b >= from_b
+                                for b = from_b to to_b
+                                    int c = htf_color_at(col_bars, cols, b)
+                                    if na(c)
+                                        pause := true
+                                    else if fvg.is_bullish ? c < 0 : c > 0
+                                        pause := true
+                            if pause
+                                chain_open := false
+                            else
+                                s_top := math.max(s_top, other.top)
+                                s_bottom := math.min(s_bottom, other.bottom)
+                                s_start := int(math.min(s_start, other.start_bar))
+                                s_htf_start := other.htf_end - 2
+                    inverted := fvg.is_bullish ? htf_c < s_bottom : htf_c > s_top
+                if inverted
+                    // Mark the series inverted and delete its drawings (removed after the loop)
+                    for j = 0 to i
+                        FVG member = array.get(fvg_arr, j)
+                        bool in_series = (member.status == "active" and member.is_bullish == fvg.is_bullish and not na(member.htf_end) and not na(s_htf_start) and member.htf_end - 2 >= s_htf_start)
+                        if j == i or in_series
+                            member.status := "inverted"
+                            if not na(member.box_id)
+                                box.delete(member.box_id)
+                                member.box_id := na
+                            if not na(member.label_id)
+                                label.delete(member.label_id)
+                                member.label_id := na
+                    // IFVG direction is INVERTED from FVG
+                    bool ifvg_is_bullish = not fvg.is_bullish
+                    // Create simplified HTF IFVG (no grading needed for bias)
+                    new_ifvg = IFVG.new(
+                        top = s_top,
+                        bottom = s_bottom,
+                        mid = (s_top + s_bottom) / 2,
+                        start_bar = s_start,
+                        inversion_bar = bar_index,
+                        inversion_close = htf_c,
+                        is_bullish = ifvg_is_bullish,
+                        status = "inverted",
+                        grade = "HTF",  // Mark as HTF
+                        entry_valid = true,
+                        be_level = ifvg_is_bullish ? s_top : s_bottom,
+                        be_status = "intact",
+                        sl_level = ifvg_is_bullish ? s_bottom : s_top,
+                        sl_type = "fvg_boundary",
+                        dol = na,
+                        has_sweep = false,
+                        momentum = "neutral",
+                        has_delivery = false,
+                        pd_zone = "neutral",
+                        momentum_score = 0,
+                        singularity_score = 0,
+                        box_id = na,
+                        label_id = na,
+                        be_line_id = na,
+                        sl_line_id = na,
+                        entry_line_id = na,
+                        entry_label_id = na,
+                        formation_divider_id = na
+                    )
+                    array.push(ifvg_arr, new_ifvg)
+        // Remove every HTF FVG inverted on this bar (series members included)
+        if array.size(fvg_arr) > 0
+            for r = array.size(fvg_arr) - 1 to 0
+                if array.get(fvg_arr, r).status == "inverted"
+                    array.remove(fvg_arr, r)
 
 // ─────────────────────────────────────────────────────────────────────
 // Check HTF IFVG mitigation
@@ -2570,18 +2625,20 @@ render_ifvg_boxes() =>
 render_htf_fvg_boxes(array<FVG> arr, string tf_label) =>
     if i_enable_htf and i_show_htf_fvg
         int arr_size = array.size(arr)
+        int shown = 0
         if arr_size > 0
-            for i = 0 to arr_size - 1
+            // Newest first: only the newest i_max_fvgs active HTF FVGs are drawn
+            for i = arr_size - 1 to 0
                 if i < array.size(arr)
                     fvg = array.get(arr, i)
-
-                    if fvg.status == "active"
-                        // Delete old drawings
-                        if not na(fvg.box_id)
-                            box.delete(fvg.box_id)
-                        if not na(fvg.label_id)
-                            label.delete(fvg.label_id)
-
+                    if not na(fvg.box_id)
+                        box.delete(fvg.box_id)
+                        fvg.box_id := na
+                    if not na(fvg.label_id)
+                        label.delete(fvg.label_id)
+                        fvg.label_id := na
+                    if fvg.status == "active" and shown < i_max_fvgs
+                        shown += 1
                         // HTF boxes: same colors but thicker borders
                         base_color = fvg.is_bullish ? i_bullish_color : i_bearish_color
                         bg_color = color.new(base_color, i_htf_box_opacity)
@@ -3095,15 +3152,17 @@ if i_show_indicator
         // HTF 1 FVG Detection
         htf1_fvg = detect_htf_fvg(i_htf_timeframe, htf_high, htf_low, htf_high_2, htf_low_2, htf_atr, htf_bar_changed)
         if not na(htf1_fvg) and not htf_fvg_exists(g_htf_fvg_array, htf1_fvg.top, htf1_fvg.bottom, htf1_fvg.is_bullish)
+            htf1_fvg.htf_end := htf_bar_idx
             array.push(g_htf_fvg_array, htf1_fvg)
-            cleanup_htf_fvg_array(g_htf_fvg_array, i_max_fvgs)
+            cleanup_htf_fvg_array(g_htf_fvg_array, FVG_MEMORY)
 
         // HTF 2 FVG Detection (only if different from HTF 1)
         if i_htf_timeframe_2 != i_htf_timeframe
             htf2_fvg = detect_htf_fvg(i_htf_timeframe_2, htf2_high, htf2_low, htf2_high_2, htf2_low_2, htf2_atr, htf2_bar_changed)
             if not na(htf2_fvg) and not htf_fvg_exists(g_htf2_fvg_array, htf2_fvg.top, htf2_fvg.bottom, htf2_fvg.is_bullish)
+                htf2_fvg.htf_end := htf2_bar_idx
                 array.push(g_htf2_fvg_array, htf2_fvg)
-                cleanup_htf_fvg_array(g_htf2_fvg_array, i_max_fvgs)
+                cleanup_htf_fvg_array(g_htf2_fvg_array, FVG_MEMORY)
 
     // ─────────────────────────────────────────────────────────────────
     // Step 4C: PD zone pipeline (Phase 2 — runs before check_inversions)
@@ -3372,11 +3431,11 @@ if i_show_indicator
     // Step 5B: Check for HTF inversions (Phase 3)
     // ─────────────────────────────────────────────────────────────────
     if i_enable_htf
-        check_htf_inversions(g_htf_fvg_array, g_htf_ifvg_array, htf_close, i_htf_timeframe)
+        check_htf_inversions(g_htf_fvg_array, g_htf_ifvg_array, htf_close, i_htf_timeframe, g_htf_col_bar, g_htf_col)
         cleanup_htf_ifvg_array(g_htf_ifvg_array, i_max_ifvgs)
 
         if i_htf_timeframe_2 != i_htf_timeframe
-            check_htf_inversions(g_htf2_fvg_array, g_htf2_ifvg_array, htf2_close, i_htf_timeframe_2)
+            check_htf_inversions(g_htf2_fvg_array, g_htf2_ifvg_array, htf2_close, i_htf_timeframe_2, g_htf2_col_bar, g_htf2_col)
             cleanup_htf_ifvg_array(g_htf2_ifvg_array, i_max_ifvgs)
 
     // ─────────────────────────────────────────────────────────────────
