@@ -346,6 +346,8 @@ var int               g_prev_pd_bar   = na
 
 // ATR for sizing
 atr_value = ta.atr(i_fvg_atr_period)
+// Approx. height of one small label in price: 2.5% of the recent price span (labels closer than this overlap)
+float g_label_gap = (ta.highest(high, 100) - ta.lowest(low, 100)) * 0.025
 
 // Swing inputs, evaluated on every bar at global scope (history references kept out of functions)
 bool swing_ready = barstate.isconfirmed and bar_index >= 2 and not na(atr_value)
@@ -2235,21 +2237,23 @@ render_dealing_range(DealingRange r) =>
         else
             line.set_x2(r.line_low, right_edge)
         // ── Labels (exact D-08 format: percentage (price)) ──
+        // Label lanes (no overlap): PD labels sit ABOVE-right of the line end, liquidity
+        // labels BELOW-right, entry labels ABOVE-left, the IFVG tag inside the box.
         string txt_high = "1 (" + str.tostring(hi, "#.##") + ")"
         string txt_eq   = "0.5 (" + str.tostring(eq, "#.##") + ")"
         string txt_low  = "0 (" + str.tostring(lo, "#.##") + ")"
         if na(r.label_high)
-            r.label_high := label.new(right_edge, hi, txt_high, style=label.style_none, textcolor=i_pd_line_color, size=size.small)
+            r.label_high := label.new(right_edge, hi, txt_high, style=label.style_label_lower_left, color=color.new(color.black, 100), textcolor=i_pd_line_color, size=size.small)
         else
             label.set_x(r.label_high, right_edge)
             label.set_text(r.label_high, txt_high)
         if na(r.label_eq)
-            r.label_eq := label.new(right_edge, eq, txt_eq, style=label.style_none, textcolor=i_pd_eq_color, size=size.small)
+            r.label_eq := label.new(right_edge, eq, txt_eq, style=label.style_label_lower_left, color=color.new(color.black, 100), textcolor=i_pd_eq_color, size=size.small)
         else
             label.set_x(r.label_eq, right_edge)
             label.set_text(r.label_eq, txt_eq)
         if na(r.label_low)
-            r.label_low := label.new(right_edge, lo, txt_low, style=label.style_none, textcolor=i_pd_line_color, size=size.small)
+            r.label_low := label.new(right_edge, lo, txt_low, style=label.style_label_lower_left, color=color.new(color.black, 100), textcolor=i_pd_line_color, size=size.small)
         else
             label.set_x(r.label_low, right_edge)
             label.set_text(r.label_low, txt_low)
@@ -2420,13 +2424,14 @@ render_ifvg_boxes() =>
                         border_style = line.style_solid
                     )
 
-                    // Draw tiny "IFVG" label at bottom-right corner of box
+                    // Draw tiny "IFVG" tag inside the box, right side, at mid (away from
+                    // the entry line, which sits just outside the box edge)
                     if i_show_labels
                         ifvg.label_id := label.new(
-                            x = right_edge - 2,
-                            y = ifvg.bottom,
+                            x = right_edge,
+                            y = ifvg.mid,
                             text = "IFVG",
-                            style = label.style_none,
+                            style = label.style_label_right,
                             color = color.new(color.black, 100),
                             textcolor = color.new(color.gray, 30),  // Subtle gray text
                             size = size.tiny,
@@ -2533,7 +2538,7 @@ render_ifvg_boxes() =>
                                 x = right_edge,
                                 y = entry_level,
                                 text = entry_label_text,
-                                style = label.style_none,
+                                style = label.style_label_lower_right,
                                 color = color.new(color.black, 100),
                                 textcolor = entry_line_color,
                                 size = size.small,
@@ -2758,6 +2763,8 @@ render_liquidity_lines() =>
         float below_strong_cut = nth_smallest(below_strong, LIQ_DRAW_PER_SIDE)
         float below_weak_cut = nth_smallest(below_weak, LIQ_DRAW_PER_SIDE)
         // Pass 2: draw
+        array<float> placed_y = array.new<float>()
+        array<label> placed_lbl = array.new<label>()
         for i = 0 to liq_size - 1
             if i < liq_size
                 liq = array.get(g_liquidity_array, i)
@@ -2852,17 +2859,31 @@ render_liquidity_lines() =>
                     else if not liq.is_valid
                         label_text := label_text + " ⊘"  // Broken through but not swept
 
-                    liq.label_id := label.new(
-                        x = right_edge,
-                        y = liq.level,
-                        text = label_text,
-                        style = label.style_none,
-                        color = color.new(color.black, 100),
-                        textcolor = line_color,
-                        size = size.tiny,
-                        textalign = text.align_left,
-                        yloc = yloc.price
-                    )
+                    // Levels closer than one label height share one label ("Strong Low · ITL")
+                    int near_idx = -1
+                    int placed_n = array.size(placed_y)
+                    if placed_n > 0
+                        for p = 0 to placed_n - 1
+                            if near_idx < 0 and math.abs(array.get(placed_y, p) - liq.level) < g_label_gap
+                                near_idx := p
+                    if near_idx >= 0
+                        label near_lbl = array.get(placed_lbl, near_idx)
+                        liq.label_id := na
+                        label.set_text(near_lbl, label.get_text(near_lbl) + " · " + label_text)
+                    else
+                        liq.label_id := label.new(
+                            x = right_edge,
+                            y = liq.level,
+                            text = label_text,
+                            style = label.style_label_upper_left,
+                            color = color.new(color.black, 100),
+                            textcolor = line_color,
+                            size = size.tiny,
+                            textalign = text.align_left,
+                            yloc = yloc.price
+                        )
+                        array.push(placed_y, liq.level)
+                        array.push(placed_lbl, liq.label_id)
 
 // ─────────────────────────────────────────────────────────────────────
 // Find Most Recent IFVG for dashboard
