@@ -108,7 +108,7 @@ type Liquidity
 type Trade
     bool is_bull        // Long (true) or short
     float entry         // Inversion candle close
-    float sl            // Hard (disaster) stop: the setup's SL line, hit only by a wick
+    float sl            // Hard (disaster) stop: the setup's SL line beyond the box, hit by a wick (na = none)
     float stop_px       // Planned stop = IFVG box far edge; entry → stop_px is 1R (lot size)
     float tp            // Take profit (fixed R:R or the setup's target)
     float zone_top      // IFVG box top (close-beyond exit)
@@ -2306,6 +2306,9 @@ create_trade(bool is_bull, float entry, float sl, float zone_top, float zone_bot
     Trade t = na
     float stop_px = is_bull ? zone_bottom : zone_top
     float risk = is_bull ? entry - stop_px : stop_px - entry
+    // Hard stop only when the SL line lies beyond the box; on the edge a wick would
+    // stop the trade before any candle closed beyond (na = exit on the close only)
+    float hard = not na(sl) and (is_bull ? sl < stop_px : sl > stop_px) ? sl : na
     if risk > 0
         float tp = is_bull ? entry + risk * i_rr : entry - risk * i_rr
         if i_target_mode == "Setup Target"
@@ -2315,7 +2318,7 @@ create_trade(bool is_bull, float entry, float sl, float zone_top, float zone_bot
                 tp := lrlr.y1
         // BE move only when the BE level lies in profit and before the TP
         bool be_ok = not na(be_level) and (is_bull ? (be_level > entry and be_level < tp) : (be_level < entry and be_level > tp))
-        t := Trade.new(is_bull = is_bull, entry = entry, sl = sl, stop_px = stop_px, tp = tp, zone_top = zone_top, zone_bottom = zone_bottom, be_level = be_ok ? be_level : na, grade = grade, start_bar = bar_index, end_bar = na, tag = tag)
+        t := Trade.new(is_bull = is_bull, entry = entry, sl = hard, stop_px = stop_px, tp = tp, zone_top = zone_top, zone_bottom = zone_bottom, be_level = be_ok ? be_level : na, grade = grade, start_bar = bar_index, end_bar = na, tag = tag)
         array.push(g_open_trades, t)
         if array.size(g_open_trades) > TRADES_OPEN_MAX
             array.shift(g_open_trades)
@@ -3470,11 +3473,11 @@ render_position() =>
                 string money = sized ? ((r_now >= 0 ? "+" : "-") + usd(r_now * risk_used) + " ") : ""
                 string l3 = switch t.result
                     1 => "TP hit " + money + "(" + r_txt + ")"
-                    -1 => "SL hit " + money + "(" + r_txt + ")"
+                    -1 => "Hard stop hit " + money + "(" + r_txt + ")"
                     2 => "Closed beyond box " + money + "(" + r_txt + ")"
                     3 => "Breakeven (0R)"
                     => (t.be_moved ? "Open, stop at BE " : "Open ") + money + "(" + r_txt + ")"
-                string ticket = side + size_txt + " @ " + str.tostring(t.entry, format.mintick) + "\nStop: close beyond " + str.tostring(t.stop_px, format.mintick) + "\nHard stop " + str.tostring(t.sl, format.mintick) + "\nTP " + str.tostring(t.tp, format.mintick) + " (" + rr_txt + ")" + (sized ? "\nRisk " + usd(risk_used) + " · Reward " + usd(risk_used * rr_tp) : "")
+                string ticket = side + size_txt + " @ " + str.tostring(t.entry, format.mintick) + "\nStop: close beyond " + str.tostring(t.stop_px, format.mintick) + "\nHard stop " + (na(t.sl) ? "none (exit on the close)" : str.tostring(t.sl, format.mintick)) + "\nTP " + str.tostring(t.tp, format.mintick) + " (" + rr_txt + ")" + (sized ? "\nRisk " + usd(risk_used) + " · Reward " + usd(risk_used * rr_tp) : "")
                 // Label always at the right edge (past the boxes) so it never covers the setup's labels
                 array.set(g_pos_label, 0, label.new(bar_index + i_extend_bars, t.entry, side + size_txt + "\n" + l2 + "\n" + l3, style=label.style_label_left, color=color.new(color.black, 30), textcolor=color.white, size=size.small, textalign=text.align_left, tooltip=ticket))
 
