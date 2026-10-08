@@ -97,7 +97,8 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 | A series of gaps grades lower than a single FVG (not singular, own gaps not delivery); detection-time FVG merge kept (2026-10-07) | Strategy favours singular FVGs; removing the merge would drop back-to-back gaps a grade | ✓ Good |
 | Grade = rating-PDF bands: sweep/delivery sets the starting grade, momentum/target/singularity/PD/chart-TF delivery step it down (2026-10-07) | A setup with no sweep or delivery could reach A on the 0-10 total | ✓ Good |
 | Broken level reclaimed within 3 closes counts as a setup sweep (2026-10-07) | Same raid was a sweep on 3m and "broken" on 1m | ✓ Good |
-| SL hit only on opposite-color close beyond the IFVG box (2026-10-07) | Wicks to the SL line invalidated good setups | ✓ Good |
+| SL hit only on a close beyond the IFVG box; any candle since 2026-10-08 (was opposite-color only) | Wicks to the SL line invalidated good setups; user trades an open stop on any close beyond | ✓ Good |
+| Position size and stats use the open-stop model: 1R = entry → IFVG box edge, SL line = rare hard stop, BE move at the BE level (2026-10-08) | Matches how the user trades; swing-stop 1R made targets too far, box-edge wick stop counted wicks as losses | — Pending |
 | Delivery = turn tapped an active same-direction FVG formed before the turn; HTF first, chart TF one step lower (2026-10-07) | Old check used the opposite direction and no tap | ✓ Good |
 | LRLR = 3+ consecutive lower highs / higher lows within 0.25 ATR of one line, no close through; target at its origin and confluence for a flat target (2026-10-07) | Trendline liquidity is a strategy target; one toggle, no settings | ✓ Good |
 | barstate.isconfirmed only | Prevents repainting — critical for trading decisions | ✓ Good |

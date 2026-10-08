@@ -100,14 +100,17 @@ type Liquidity
 type Trade
     bool is_bull        // Long (true) or short
     float entry         // Inversion candle close
-    float sl            // Setup's SL level
+    float sl            // Hard (disaster) stop: the setup's SL line, hit only by a wick
+    float stop_px       // Planned stop = IFVG box far edge; entry → stop_px is 1R (lot size)
     float tp            // Take profit (fixed R:R or the setup's target)
-    float zone_top      // IFVG box top (box-close exit)
-    float zone_bottom   // IFVG box bottom (box-close exit)
+    float zone_top      // IFVG box top (close-beyond exit)
+    float zone_bottom   // IFVG box bottom (close-beyond exit)
+    float be_level      // Stop moves to entry once price reaches it (na = no BE move)
+    bool be_moved = false // Stop is at entry
     string grade        // Setup grade at inversion
     int start_bar       // Inversion bar
     int end_bar         // Exit bar (na while open)
-    int result = 0      // 0 = open, 1 = TP hit, -1 = SL hit, 2 = closed on a candle close beyond the box
+    int result = 0      // 0 = open, 1 = TP hit, -1 = hard stop hit, 2 = closed beyond the box, 3 = breakeven
     float r_result = na // R made at exit
     float exit_price = na
 
@@ -334,7 +337,7 @@ i_ifvg_border_style = input.string("Dashed", "IFVG Border Style", options=["Soli
 string GROUP_RISK = "═══ Risk & Position ═══"
 i_account_size      = input.float(10000.0, "Account Size (USD)", minval=1.0, step=1000.0, group=GROUP_RISK)
 i_risk_type         = input.string("%", "Risk Type", options=["%", "USD"], group=GROUP_RISK,
-                      tooltip="%: risk a percent of the account per trade. USD: risk a fixed dollar amount per trade")
+                      tooltip="%: risk a percent of the account per trade. USD: risk a fixed dollar amount per trade. Risk is measured from entry to the IFVG box edge (open stop: a candle closing beyond the box)")
 i_risk_value        = input.float(1.0, "Risk per Trade", minval=0.01, step=0.25, group=GROUP_RISK,
                       tooltip="Percent of the account or USD amount, per Risk Type. Size is rounded down so the risk is never exceeded")
 i_target_mode       = input.string("Fixed R:R", "Take Profit", options=["Fixed R:R", "Setup Target"], group=GROUP_RISK,
@@ -344,11 +347,11 @@ i_rr                = input.float(2.0, "R:R (Fixed)", minval=0.1, step=0.5, grou
 i_show_size         = input.bool(true, "Show Lot Size & Risk", group=GROUP_RISK,
                       tooltip="Label on the latest valid setup: size, risk, reward, live open PnL. Hover it for the order ticket")
 i_show_pnl          = input.bool(true, "Show PnL Zone", group=GROUP_RISK,
-                      tooltip="Profit and loss boxes on the latest valid setup (entry to TP, entry to SL)")
+                      tooltip="Profit and loss boxes on the latest valid setup (entry to TP, entry to the IFVG box edge)")
 i_pnl_profit_color  = input.color(color.new(#089981, 80), "PnL Profit Color", group=GROUP_RISK)
 i_pnl_loss_color    = input.color(color.new(#F23645, 80), "PnL Loss Color", group=GROUP_RISK)
 i_show_stats        = input.bool(true, "Show Win/Loss Stats", group=GROUP_RISK,
-                      tooltip="Table of win rate and average R per grade over the loaded chart history, and ✓/✗ marks where past setups hit TP or SL. Entry at the inversion close; exit at SL, TP, or an opposite candle closing beyond the IFVG box. No commission")
+                      tooltip="Win rate, breakeven rate and average R per grade over the loaded chart history, with ✓/✗/BE marks at past exits. Entry at the inversion close, 1R = entry to the IFVG box edge. Exit: TP wick, any candle closing beyond the box, a wick to the hard stop (SL line), or entry after the BE level was reached. No commission")
 
 // ─────────────────────────────────────────────────────────────────────
 // DEBUG (kept last so adding/removing it never shifts saved settings)
@@ -425,6 +428,7 @@ float g_label_gap = (ta.highest(high, 100) - ta.lowest(low, 100)) * 0.025
 var array<Trade> g_open_trades = array.new<Trade>()
 var array<int> g_stat_wins = array.new<int>(7, 0)        // Per grade, index 0 = A+ ... 6 = C
 var array<int> g_stat_losses = array.new<int>(7, 0)
+var array<int> g_stat_be = array.new<int>(7, 0)          // Breakeven exits (0R)
 var array<float> g_stat_r = array.new<float>(7, 0.0)    // Sum of R per grade
 var array<label> g_trade_marks = array.new<label>()     // ✓/✗ marks at past exits
 var array<box> g_pos_boxes = array.new<box>(2)          // 0 = loss box, 1 = profit box
@@ -2183,6 +2187,7 @@ position_info(float entry, float sl) =>
             else
                 float one = micro != "" ? per_unit / 10.0 : per_unit
                 txt := "risk too small (1 " + (micro != "" ? micro : root) + " = " + usd(one) + ")"
+                used := 0.0
         else
             float units = budget / per_unit
             float lot = syminfo.type == "forex" ? 100000.0 : syminfo.basecurrency == "XAU" ? 100.0 : syminfo.basecurrency == "XAG" ? 5000.0 : 0.0
@@ -2193,6 +2198,7 @@ position_info(float entry, float sl) =>
                     used := lots * lot * per_unit
                 else
                     txt := "risk too small (0.01 lot = " + usd(per_unit * lot * 0.01) + ")"
+                    used := 0.0
             else
                 float qty = syminfo.type == "stock" ? math.floor(units) : math.floor(units * 100.0) / 100.0
                 if qty > 0
@@ -2200,16 +2206,19 @@ position_info(float entry, float sl) =>
                     used := qty * per_unit
                 else
                     txt := "risk too small"
+                    used := 0.0
     [txt, used]
 
 // ─────────────────────────────────────────────────────────────────────
-// Open a trade at the inversion close
-// TP: fixed R:R, or the setup's target (DOL level, else LRLR origin) when
+// Open a trade at the inversion close (open-stop model)
+// 1R = entry → IFVG box far edge (planned stop; sizes the position).
+// TP: fixed R:R of that 1R, or the setup's target (DOL level, else LRLR origin) when
 // "Setup Target" is chosen — fixed R:R when the setup has no target.
 // ─────────────────────────────────────────────────────────────────────
-create_trade(bool is_bull, float entry, float sl, float zone_top, float zone_bottom, string grade, Liquidity dol, LRLR lrlr) =>
+create_trade(bool is_bull, float entry, float sl, float zone_top, float zone_bottom, float be_level, string grade, Liquidity dol, LRLR lrlr) =>
     Trade t = na
-    float risk = math.abs(entry - sl)
+    float stop_px = is_bull ? zone_bottom : zone_top
+    float risk = is_bull ? entry - stop_px : stop_px - entry
     if risk > 0
         float tp = is_bull ? entry + risk * i_rr : entry - risk * i_rr
         if i_target_mode == "Setup Target"
@@ -2217,7 +2226,9 @@ create_trade(bool is_bull, float entry, float sl, float zone_top, float zone_bot
                 tp := dol.level
             else if not na(lrlr)
                 tp := lrlr.y1
-        t := Trade.new(is_bull = is_bull, entry = entry, sl = sl, tp = tp, zone_top = zone_top, zone_bottom = zone_bottom, grade = grade, start_bar = bar_index, end_bar = na)
+        // BE move only when the BE level lies in profit and before the TP
+        bool be_ok = not na(be_level) and (is_bull ? (be_level > entry and be_level < tp) : (be_level < entry and be_level > tp))
+        t := Trade.new(is_bull = is_bull, entry = entry, sl = sl, stop_px = stop_px, tp = tp, zone_top = zone_top, zone_bottom = zone_bottom, be_level = be_ok ? be_level : na, grade = grade, start_bar = bar_index, end_bar = na)
         array.push(g_open_trades, t)
         if array.size(g_open_trades) > TRADES_OPEN_MAX
             array.shift(g_open_trades)
@@ -2378,7 +2389,7 @@ check_inversions() =>
                                 sl_level := ifvg_is_bullish ? s_bottom : s_top
 
                             // ═══════════════════════════════════════════════════════════
-                            // ENTRY VALIDITY - the SL is hit only by an opposite-color candle
+                            // ENTRY VALIDITY - the SL is hit only by any candle
                             // closing beyond the IFVG box (see is_ifvg_stopped); the inversion
                             // candle closes on the other side, so the entry starts valid
                             // ═══════════════════════════════════════════════════════════
@@ -2448,7 +2459,7 @@ check_inversions() =>
                                 formation_divider_id = na
                             )
 
-                            new_ifvg.trade := create_trade(ifvg_is_bullish, close, sl_level, s_top, s_bottom, grade, dol, path_lrlr)
+                            new_ifvg.trade := create_trade(ifvg_is_bullish, close, sl_level, s_top, s_bottom, be_level, grade, dol, path_lrlr)
                             array.push(g_ifvg_array, new_ifvg)
         // Remove every FVG inverted on this bar (series members included)
         if array.size(g_fvg_array) > 0
@@ -2461,12 +2472,12 @@ check_inversions() =>
 // ══════════════════════════════════════════════════════════════════════
 
 // ─────────────────────────────────────────────────────────────────────
-// SL hit / setup invalidated: a sell candle closes below the IFVG box (longs) or
-// a buy candle closes above it (shorts). Wicks through the box or the SL line do
-// not stop the setup.
+// SL hit / setup invalidated: any candle closes below the IFVG box (longs) or
+// above it (shorts) — the trader's open stop. Wicks through the box or the SL line
+// do not stop the setup.
 // ─────────────────────────────────────────────────────────────────────
 is_ifvg_stopped(IFVG ifvg) =>
-    ifvg.is_bullish ? (close < open and close < ifvg.bottom) : (close > open and close > ifvg.top)
+    ifvg.is_bullish ? close < ifvg.bottom : close > ifvg.top
 
 // ─────────────────────────────────────────────────────────────────────
 // Update BE and SL status for all active IFVGs
@@ -2539,7 +2550,7 @@ check_mitigations() =>
                 ifvg = array.get(g_ifvg_array, i)
 
                 if ifvg.status == "inverted"
-                    // Mitigated = stopped: opposite-color candle closes beyond the box
+                    // Mitigated = stopped: any candle closes beyond the box
                     bool mitigated = is_ifvg_stopped(ifvg)
 
                     if mitigated
@@ -2564,12 +2575,15 @@ check_mitigations() =>
     mitigation_count
 
 // ─────────────────────────────────────────────────────────────────────
-// Track open trades to their exit (win/loss stats, PnL label)
-// RULE 1: SL first: a wick to the SL line is a full -1R loss (also when TP is hit
-//         on the same candle — the order inside a candle is unknown).
-// RULE 2: TP: a wick to the TP wins at the TP's R.
-// RULE 3: An opposite-color candle closing beyond the IFVG box (the setup's SL rule)
-//         exits at that close.
+// Track open trades to their exit (open-stop model: win/loss stats, PnL label)
+// RULE 1: Stop wick first — the hard stop (setup's SL line, rare, can be worse than
+//         -1R), or entry once the stop moved to breakeven (0R). A candle that also
+//         reaches the TP still counts as the stop (order inside a candle is unknown).
+// RULE 2: TP: a wick to the TP wins.
+// RULE 3: Any candle closing beyond the IFVG box exits at that close (the open stop,
+//         about -1R). Wicks through the box that close back inside are not exits.
+// RULE 4: After the exit checks, a wick to the BE level moves the stop to entry
+//         from the next candle on.
 // ─────────────────────────────────────────────────────────────────────
 update_trades() =>
     int n = array.size(g_open_trades)
@@ -2577,30 +2591,37 @@ update_trades() =>
         for i = n - 1 to 0
             Trade t = array.get(g_open_trades, i)
             if bar_index > t.start_bar
-                float risk = math.abs(t.entry - t.sl)
-                bool sl_hit = t.is_bull ? low <= t.sl : high >= t.sl
+                float risk = math.abs(t.entry - t.stop_px)
+                float stop_now = t.be_moved ? t.entry : t.sl
+                bool stop_hit = t.is_bull ? low <= stop_now : high >= stop_now
                 bool tp_hit = t.is_bull ? high >= t.tp : low <= t.tp
-                bool box_exit = t.is_bull ? (close < open and close < t.zone_bottom) : (close > open and close > t.zone_top)
-                if sl_hit or tp_hit or box_exit
-                    float exit_px = sl_hit ? t.sl : tp_hit ? t.tp : close
-                    t.result := sl_hit ? -1 : tp_hit ? 1 : 2
+                bool close_exit = t.is_bull ? close < t.zone_bottom : close > t.zone_top
+                if stop_hit or tp_hit or close_exit
+                    float exit_px = stop_hit ? stop_now : tp_hit ? t.tp : close
+                    t.result := stop_hit ? (t.be_moved ? 3 : -1) : tp_hit ? 1 : 2
                     t.exit_price := exit_px
-                    t.r_result := (t.is_bull ? exit_px - t.entry : t.entry - exit_px) / risk
+                    t.r_result := t.result == 3 ? 0.0 : (t.is_bull ? exit_px - t.entry : t.entry - exit_px) / risk
                     t.end_bar := bar_index
                     int gi = grade_index(t.grade)
-                    if t.r_result > 0
+                    if t.result == 3
+                        array.set(g_stat_be, gi, array.get(g_stat_be, gi) + 1)
+                    else if t.r_result > 0
                         array.set(g_stat_wins, gi, array.get(g_stat_wins, gi) + 1)
                     else
                         array.set(g_stat_losses, gi, array.get(g_stat_losses, gi) + 1)
                     array.set(g_stat_r, gi, array.get(g_stat_r, gi) + t.r_result)
                     if i_show_stats and grade_meets_minimum(t.grade, i_min_grade_display)
                         bool won = t.r_result > 0
-                        string mark_txt = (won ? "✓ +" : "✗ ") + str.tostring(t.r_result, "0.0") + "R"
-                        label mk = label.new(bar_index, exit_px, mark_txt, style=(t.is_bull == won ? label.style_label_down : label.style_label_up), color=color.new(color.black, 100), textcolor=(won ? i_bullish_color : i_bearish_color), size=size.tiny)
+                        string mark_txt = t.result == 3 ? "BE 0R" : (won ? "✓ +" : "✗ ") + str.tostring(t.r_result, "0.0") + "R"
+                        color mark_col = t.result == 3 ? color.gray : won ? i_bullish_color : i_bearish_color
+                        label mk = label.new(bar_index, exit_px, mark_txt, style=(t.is_bull == won ? label.style_label_down : label.style_label_up), color=color.new(color.black, 100), textcolor=mark_col, size=size.tiny)
                         array.push(g_trade_marks, mk)
                         if array.size(g_trade_marks) > TRADE_MARKS_MAX
                             label.delete(array.shift(g_trade_marks))
                     array.remove(g_open_trades, i)
+                if t.result == 0 and not t.be_moved and not na(t.be_level)
+                    if t.is_bull ? high >= t.be_level : low <= t.be_level
+                        t.be_moved := true
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 10: RENDERING
@@ -3337,11 +3358,11 @@ render_position() =>
             int left_x = clamp_left_bar(t.start_bar)
             int right_x = t.result != 0 ? t.end_bar : bar_index + i_extend_bars
             if i_show_pnl
-                array.set(g_pos_boxes, 0, box.new(left_x, math.max(t.entry, t.sl), right_x, math.min(t.entry, t.sl), border_color=i_pnl_loss_color, bgcolor=i_pnl_loss_color))
+                array.set(g_pos_boxes, 0, box.new(left_x, math.max(t.entry, t.stop_px), right_x, math.min(t.entry, t.stop_px), border_color=i_pnl_loss_color, bgcolor=i_pnl_loss_color))
                 array.set(g_pos_boxes, 1, box.new(left_x, math.max(t.entry, t.tp), right_x, math.min(t.entry, t.tp), border_color=i_pnl_profit_color, bgcolor=i_pnl_profit_color))
             if i_show_size
-                [size_txt, risk_used] = position_info(t.entry, t.sl)
-                float risk_dist = math.abs(t.entry - t.sl)
+                [size_txt, risk_used] = position_info(t.entry, t.stop_px)
+                float risk_dist = math.abs(t.entry - t.stop_px)
                 float rr_tp = math.abs(t.tp - t.entry) / risk_dist
                 bool sized = risk_used > 0
                 string side = t.is_bull ? "BUY " : "SELL "
@@ -3353,49 +3374,56 @@ render_position() =>
                 string l3 = switch t.result
                     1 => "TP hit " + money + "(" + r_txt + ")"
                     -1 => "SL hit " + money + "(" + r_txt + ")"
-                    2 => "Closed (box) " + money + "(" + r_txt + ")"
-                    => "Open " + money + "(" + r_txt + ")"
-                string ticket = side + size_txt + " @ " + str.tostring(t.entry, format.mintick) + "\nSL " + str.tostring(t.sl, format.mintick) + "\nTP " + str.tostring(t.tp, format.mintick) + " (" + rr_txt + ")" + (sized ? "\nRisk " + usd(risk_used) + " · Reward " + usd(risk_used * rr_tp) : "")
+                    2 => "Closed beyond box " + money + "(" + r_txt + ")"
+                    3 => "Breakeven (0R)"
+                    => (t.be_moved ? "Open, stop at BE " : "Open ") + money + "(" + r_txt + ")"
+                string ticket = side + size_txt + " @ " + str.tostring(t.entry, format.mintick) + "\nStop: close beyond " + str.tostring(t.stop_px, format.mintick) + "\nHard stop " + str.tostring(t.sl, format.mintick) + "\nTP " + str.tostring(t.tp, format.mintick) + " (" + rr_txt + ")" + (sized ? "\nRisk " + usd(risk_used) + " · Reward " + usd(risk_used * rr_tp) : "")
                 array.set(g_pos_label, 0, label.new(right_x, t.entry, side + size_txt + "\n" + l2 + "\n" + l3, style=label.style_label_left, color=color.new(color.black, 30), textcolor=color.white, size=size.small, textalign=text.align_left, tooltip=ticket))
 
 // ─────────────────────────────────────────────────────────────────────
 // Win/loss stats per grade over the loaded chart history
 // ─────────────────────────────────────────────────────────────────────
-var table g_stats_table = table.new(position.bottom_right, 4, 9, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+var table g_stats_table = table.new(position.bottom_right, 5, 9, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
 
 render_trade_stats() =>
     if barstate.islast
-        table.clear(g_stats_table, 0, 0, 3, 8)
+        table.clear(g_stats_table, 0, 0, 4, 8)
         if i_show_stats
             array<string> names = array.from("A+", "A", "A-", "B+", "B", "B-", "C")
             table.cell(g_stats_table, 0, 0, "Grade", text_color=color.gray, text_size=size.small)
             table.cell(g_stats_table, 1, 0, "Trades", text_color=color.gray, text_size=size.small)
             table.cell(g_stats_table, 2, 0, "Win %", text_color=color.gray, text_size=size.small)
-            table.cell(g_stats_table, 3, 0, "Avg R", text_color=color.gray, text_size=size.small)
+            table.cell(g_stats_table, 3, 0, "BE %", text_color=color.gray, text_size=size.small)
+            table.cell(g_stats_table, 4, 0, "Avg R", text_color=color.gray, text_size=size.small)
             int row = 1
             int tot_n = 0
             int tot_w = 0
+            int tot_be = 0
             float tot_r = 0.0
             for gi = 0 to 6
                 int w = array.get(g_stat_wins, gi)
-                int cnt = w + array.get(g_stat_losses, gi)
+                int be = array.get(g_stat_be, gi)
+                int cnt = w + be + array.get(g_stat_losses, gi)
                 float sum_r = array.get(g_stat_r, gi)
                 if cnt > 0
                     float avg_r = sum_r / cnt
                     table.cell(g_stats_table, 0, row, array.get(names, gi), text_color=grade_to_color(array.get(names, gi)), text_size=size.small)
                     table.cell(g_stats_table, 1, row, str.tostring(cnt), text_color=color.white, text_size=size.small)
                     table.cell(g_stats_table, 2, row, str.tostring(100.0 * w / cnt, "0") + "%", text_color=color.white, text_size=size.small)
-                    table.cell(g_stats_table, 3, row, (avg_r >= 0 ? "+" : "") + str.tostring(avg_r, "0.00"), text_color=(avg_r >= 0 ? i_bullish_color : i_bearish_color), text_size=size.small)
+                    table.cell(g_stats_table, 3, row, str.tostring(100.0 * be / cnt, "0") + "%", text_color=color.gray, text_size=size.small)
+                    table.cell(g_stats_table, 4, row, (avg_r >= 0 ? "+" : "") + str.tostring(avg_r, "0.00"), text_color=(avg_r >= 0 ? i_bullish_color : i_bearish_color), text_size=size.small)
                     row += 1
                     tot_n += cnt
                     tot_w += w
+                    tot_be += be
                     tot_r += sum_r
             if tot_n > 0
                 float tot_avg = tot_r / tot_n
                 table.cell(g_stats_table, 0, row, "All", text_color=color.white, text_size=size.small)
                 table.cell(g_stats_table, 1, row, str.tostring(tot_n), text_color=color.white, text_size=size.small)
                 table.cell(g_stats_table, 2, row, str.tostring(100.0 * tot_w / tot_n, "0") + "%", text_color=color.white, text_size=size.small)
-                table.cell(g_stats_table, 3, row, (tot_avg >= 0 ? "+" : "") + str.tostring(tot_avg, "0.00"), text_color=(tot_avg >= 0 ? i_bullish_color : i_bearish_color), text_size=size.small)
+                table.cell(g_stats_table, 3, row, str.tostring(100.0 * tot_be / tot_n, "0") + "%", text_color=color.gray, text_size=size.small)
+                table.cell(g_stats_table, 4, row, (tot_avg >= 0 ? "+" : "") + str.tostring(tot_avg, "0.00"), text_color=(tot_avg >= 0 ? i_bullish_color : i_bearish_color), text_size=size.small)
 
 // ─────────────────────────────────────────────────────────────────────
 // Find Most Recent IFVG for dashboard
