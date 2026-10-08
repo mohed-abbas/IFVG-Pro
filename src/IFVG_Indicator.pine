@@ -114,6 +114,7 @@ type Trade
     float r_result = na // R made at exit
     float exit_price = na
     string tag = ""     // Grade and setup details for stats breakdown / strategy trade list
+    bool notify = false // Meets the alert grade: breakeven and exit alerts are sent
 
 // Type: Inverted Fair Value Gap (Extended for Phase 2)
 type IFVG
@@ -358,6 +359,18 @@ i_show_stats        = input.bool(true, "Show Win/Loss Stats", group=GROUP_RISK,
                       tooltip="Win rate, breakeven rate and average R per grade over the loaded chart history, with ✓/✗/BE marks at past exits. Entry at the inversion close, 1R = entry to the IFVG box edge. Exit: TP wick, any candle closing beyond the box, a wick to the hard stop (SL line), or entry after the BE level was reached. No commission")
 
 // ─────────────────────────────────────────────────────────────────────
+// Alerts (push, popup, email: one alert covers every event)
+// ─────────────────────────────────────────────────────────────────────
+string GROUP_ALERT = "═══ Alerts ═══"
+i_alert_min_grade   = input.string("A-", "Alert Min Grade",
+                      options=["A+", "A", "A-", "B+", "B", "B-", "C", "All"], group=GROUP_ALERT,
+                      tooltip="Only setups with this grade or better send alerts. Set up ONE alert: Create Alert → Condition: this indicator → \"Any alert() function call\". It covers every event below. Recreate the alert after changing any setting")
+i_alert_setups      = input.bool(true, "Alert: New Setups", group=GROUP_ALERT,
+                      tooltip="On the inversion candle close: direction, entry, open stop (close beyond the box), hard stop, TP, BE level, lot size and risk")
+i_alert_updates     = input.bool(true, "Alert: Trade Updates", group=GROUP_ALERT,
+                      tooltip="For setups that met the alert grade: BE level reached (move the stop to entry), candle closed beyond the box (exit), TP hit, hard stop hit, stopped at breakeven")
+
+// ─────────────────────────────────────────────────────────────────────
 // DEBUG (kept last so adding/removing it never shifts saved settings)
 // ─────────────────────────────────────────────────────────────────────
 GROUP_DEBUG = "Debug"
@@ -439,6 +452,7 @@ var array<box> g_pos_boxes = array.new<box>(2)          // 0 = loss box, 1 = pro
 var array<label> g_pos_label = array.new<label>(1)      // Lot size & risk label
 int TRADES_OPEN_MAX = 100   // Open trades tracked at once
 int TRADE_MARKS_MAX = 50    // ✓/✗ marks kept on the chart
+var array<string> g_alert_msgs = array.new<string>()    // Alert messages queued this candle
 // Symbol currency → USD (1 for USD-quoted symbols)
 float fx_rate = request.currency_rate(syminfo.currency, "USD", ignore_invalid_currency=true)
 float g_fx = syminfo.currency == "USD" ? 1.0 : nz(fx_rate, 1.0)
@@ -2247,6 +2261,34 @@ trade_tag(string grade, int sweep_kind, string delivery_src, int mom, int sing, 
     grade + "|sw=" + str.tostring(sweep_kind) + "|dl=" + dl + "|mo=" + str.tostring(mom) + "|si=" + str.tostring(sing) + "|tg=" + str.tostring(tgt) + "|pd=" + pd_zone + "|lr=" + (has_lrlr ? "1" : "0") + "|ss=" + session_name() + "|bi=" + bi
 
 // ─────────────────────────────────────────────────────────────────────
+// Alert texts (queued, sent once per candle close at the end of the script)
+// ─────────────────────────────────────────────────────────────────────
+fmt_px(float p) =>
+    str.tostring(p, format.mintick)
+
+fmt_r(float r) =>
+    (r >= 0 ? "+" : "-") + str.tostring(math.abs(r), "0.0#") + "R"
+
+alert_head(Trade t) =>
+    t.grade + " " + (t.is_bull ? "BUY" : "SELL") + " " + syminfo.ticker + " " + get_tf_label(timeframe.period)
+
+queue_alert(string msg) =>
+    array.push(g_alert_msgs, msg)
+
+setup_alert_text(Trade t) =>
+    [size_txt, used] = position_info(t.entry, t.stop_px)
+    float rr = math.abs(t.tp - t.entry) / math.abs(t.entry - t.stop_px)
+    string stop_txt = "Stop: close " + (t.is_bull ? "below " : "above ") + fmt_px(t.stop_px) + (na(t.sl) ? "" : " · Hard SL " + fmt_px(t.sl))
+    string tp_txt = "TP " + fmt_px(t.tp) + " (1:" + str.tostring(rr, "0.0#") + ")" + (na(t.be_level) ? "" : " · BE at " + fmt_px(t.be_level))
+    (t.is_bull ? "🟢 " : "🔴 ") + alert_head(t) + "\nEntry " + fmt_px(t.entry) + " · " + stop_txt + "\n" + tp_txt + "\nSize " + size_txt + (used > 0 ? " · Risk " + usd(used) : "")
+
+exit_alert_text(Trade t) =>
+    [size_txt, used] = position_info(t.entry, t.stop_px)
+    string what = t.result == 1 ? "✅ TP hit at " + fmt_px(t.exit_price) : t.result == -1 ? "❌ Hard stop hit at " + fmt_px(t.exit_price) : t.result == 3 ? "⚪ Stopped at breakeven " + fmt_px(t.exit_price) : "⛔ Closed " + (t.is_bull ? "below" : "above") + " the box at " + fmt_px(t.exit_price) + ", exit now"
+    string pnl = used > 0 ? " (" + (t.r_result >= 0 ? "+" : "-") + usd(t.r_result * used) + ")" : ""
+    alert_head(t) + "\n" + what + " · " + fmt_r(t.r_result) + pnl
+
+// ─────────────────────────────────────────────────────────────────────
 // Open a trade at the inversion close (open-stop model)
 // 1R = entry → IFVG box far edge (planned stop; sizes the position).
 // TP: fixed R:R of that 1R, or the setup's target (DOL level, else LRLR origin) when
@@ -2498,6 +2540,10 @@ check_inversions() =>
 
                             string setup_tag = trade_tag(grade, sweep_kind, delivery_src, momentum_score, singular_score, target_score, ifvg_pd_zone, not na(path_lrlr), ifvg_is_bullish)
                             new_ifvg.trade := create_trade(ifvg_is_bullish, close, sl_level, s_top, s_bottom, be_level, grade, setup_tag, dol, path_lrlr)
+                            if not na(new_ifvg.trade) and grade_meets_minimum(grade, i_alert_min_grade)
+                                new_ifvg.trade.notify := true
+                                if i_alert_setups
+                                    queue_alert(setup_alert_text(new_ifvg.trade))
                             array.push(g_ifvg_array, new_ifvg)
         // Remove every FVG inverted on this bar (series members included)
         if array.size(g_fvg_array) > 0
@@ -2640,6 +2686,8 @@ update_trades() =>
                     t.exit_price := exit_px
                     t.r_result := t.result == 3 ? 0.0 : (t.is_bull ? exit_px - t.entry : t.entry - exit_px) / risk
                     t.end_bar := bar_index
+                    if t.notify and i_alert_updates
+                        queue_alert(exit_alert_text(t))
                     int gi = grade_index(t.grade)
                     if grade_meets_minimum(t.grade, i_stats_min_grade)
                         if t.result == 3
@@ -2661,6 +2709,8 @@ update_trades() =>
                 if t.result == 0 and not t.be_moved and not na(t.be_level)
                     if t.is_bull ? high >= t.be_level : low <= t.be_level
                         t.be_moved := true
+                        if t.notify and i_alert_updates
+                            queue_alert("🔵 " + alert_head(t) + "\nBE level " + fmt_px(t.be_level) + " reached · move stop to entry " + fmt_px(t.entry))
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 10: RENDERING
@@ -4122,6 +4172,14 @@ if i_show_indicator
     render_dashboard(current_latest_ifvg)
     render_position()
     render_trade_stats()
+
+// ─────────────────────────────────────────────────────────────────────
+// Alerts: every message queued this candle goes out as one alert()
+// (one TradingView alert with "Any alert() function call" catches them all)
+// ─────────────────────────────────────────────────────────────────────
+if array.size(g_alert_msgs) > 0
+    alert(array.join(g_alert_msgs, "\n\n"), alert.freq_once_per_bar_close)
+    array.clear(g_alert_msgs)
 
 // ─────────────────────────────────────────────────────────────────────
 // Debug panel (Settings → Debug → Show Debug Panel)
