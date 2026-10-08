@@ -474,6 +474,10 @@ bool swing_cand_low = low[1] < low[2] and low[1] <= low
 clamp_left_bar(int x) =>
     int(math.max(x, bar_index - 4999))
 
+// Drawings anchored up to 4999 bars back read that bar's time; reserve the full
+// buffer, otherwise the size measured on history is exceeded live (runtime error)
+max_bars_back(time, 5000)
+
 // ─────────────────────────────────────────────────────────────────────
 // Get label size from string
 // ─────────────────────────────────────────────────────────────────────
