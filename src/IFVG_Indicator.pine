@@ -81,7 +81,7 @@ type LRLR
 type Liquidity
     float level         // Price level (average of touches)
     float original_level // First swing's exact price
-    string liq_type     // "EQH", "EQL", "ITH", "ITL"
+    string liq_type     // "EQH", "EQL", "ITH", "ITL", "Data High", "Data Low"
     string quality      // "perfect", "relative" (NEW)
     int bar_idx         // Bar where first swing formed
     int last_touch_bar  // Bar of most recent valid touch
@@ -232,6 +232,8 @@ i_show_mitigated_liq = input.bool(false, "Show Mitigated Liquidity", group=GROUP
                        tooltip="Keep displaying ITH/ITL and EQH/EQL after they're mitigated (swept ✗ or broken through ⊘)")
 i_show_lrlr         = input.bool(true, "Show LRLR (Trendline Liquidity)", group=GROUP_LIQ,
                       tooltip="Draw low resistance liquidity runs: 3+ aligned lower highs above price or higher lows below price. Detection and grading run either way.")
+i_show_data         = input.bool(true, "Show Data Highs/Lows", group=GROUP_LIQ,
+                      tooltip="Draw the high and low of US news candles (8:30, 10:00, 14:00 New York) on 15m and lower. A candle counts only if it is at least 2x ATR. Detection and grading run either way.")
 
 // ─────────────────────────────────────────────────────────────────────
 // EQH/EQL Detection Settings (Enhanced)
@@ -354,6 +356,11 @@ var array<LRLR> g_lrlr = array.new<LRLR>(2)
 var array<int> g_lrlr_last_swing = array.from(-1, -1)  // newest swing bar each side was built from
 int LRLR_MIN_POINTS = 3     // Swings needed for a trendline
 float LRLR_FIT_ATR  = 0.25  // Max distance (ATR) of a middle swing from the line
+// Data (news) candles: [release bar index, ATR before the release] while the next candle is checked
+var array<float> g_data_pending = array.new<float>(2, na)
+float DATA_RANGE_ATR = 2.0   // Candle range (x ATR before the release) that marks a real release
+int DATA_MAX_TF_SECS = 900   // Data candles only on 15m and lower
+color DATA_COLOR     = #E040FB  // Data High/Low lines (purple)
 
 // Liquidity memory rules (automatic, not user settings)
 // Live levels are remembered until swept or broken, regardless of age.
@@ -372,6 +379,7 @@ var int               g_prev_pd_bar   = na
 
 // ATR for sizing
 atr_value = ta.atr(i_fvg_atr_period)
+atr_prev = atr_value[1]  // ATR before the current candle (Data candle size check)
 // Approx. height of one small label in price: 2.5% of the recent price span (labels closer than this overlap)
 float g_label_gap = (ta.highest(high, 100) - ta.lowest(low, 100)) * 0.025
 
@@ -492,6 +500,15 @@ cleanup_ifvg_array() =>
             label.delete(old_ifvg.entry_label_id)
         if not na(old_ifvg.formation_divider_id)
             line.delete(old_ifvg.formation_divider_id)
+
+// ─────────────────────────────────────────────────────────────────────
+// Liquidity side: buy-side (highs) or sell-side (lows)
+// ─────────────────────────────────────────────────────────────────────
+is_bsl(Liquidity liq) =>
+    liq.liq_type == "EQH" or liq.liq_type == "ITH" or liq.liq_type == "Data High"
+
+is_ssl(Liquidity liq) =>
+    liq.liq_type == "EQL" or liq.liq_type == "ITL" or liq.liq_type == "Data Low"
 
 // ─────────────────────────────────────────────────────────────────────
 // Delete a liquidity level's line and label
@@ -1402,14 +1419,14 @@ check_liquidity_sweeps() =>
                 liq = array.get(g_liquidity_array, i)
                 if not liq.is_swept and liq.is_valid
                     // BSL Sweep: high wicks above, close stays below
-                    if (liq.liq_type == "EQH" or liq.liq_type == "ITH")
+                    if is_bsl(liq)
                         if high > liq.level and close < liq.level
                             liq.is_swept := true
                             liq.swept_bar := bar_index
                             liq.is_valid := false  // No more touches count
                             liq.mitigated_bar := bar_index
                     // SSL Sweep: low wicks below, close stays above
-                    if (liq.liq_type == "EQL" or liq.liq_type == "ITL")
+                    if is_ssl(liq)
                         if low < liq.level and close > liq.level
                             liq.is_swept := true
                             liq.swept_bar := bar_index
@@ -1419,11 +1436,11 @@ check_liquidity_sweeps() =>
                 // A broken level can never be swept later — a wick back through it is not a sweep.
                 // NOTE: PD dealing range uses g_pd_liquidity_array, so this does not affect PD zones.
                 if liq.is_valid and not liq.is_swept
-                    if liq.liq_type == "EQH" or liq.liq_type == "ITH"
+                    if is_bsl(liq)
                         if close > liq.level
                             liq.is_valid := false
                             liq.mitigated_bar := bar_index
-                    if liq.liq_type == "EQL" or liq.liq_type == "ITL"
+                    if is_ssl(liq)
                         if close < liq.level
                             liq.is_valid := false
                             liq.mitigated_bar := bar_index
@@ -1442,6 +1459,50 @@ check_liquidity_sweeps() =>
                         liq.is_decided := true
                     else if liq.liq_type == "ITL" and array.size(g_swing_lows) > 0 and array.get(g_swing_lows, array.size(g_swing_lows) - 1).bar_idx > liq.bar_idx
                         liq.is_decided := true
+
+// ─────────────────────────────────────────────────────────────────────
+// Data (news) candles — no calendar in Pine, so a release is detected by time + size
+// RULE 1: The candle contains a US release time: 8:30, 10:00 or 14:00 New York,
+//         Monday-Friday. Times are converted to New York (DST included), so the
+//         user's chart timezone does not matter.
+// RULE 2: The release candle, or the candle after it, has a range of at least
+//         DATA_RANGE_ATR x the ATR before the release. Quiet days are not marked.
+// RULE 3: The big candle's high and low become "Data High" / "Data Low" liquidity:
+//         targets and sweepable levels until swept or broken, like EQH/EQL.
+// NOTE: Only on 15m and lower; on higher TFs the news candle is lost inside the bar.
+// ─────────────────────────────────────────────────────────────────────
+is_release_bar() =>
+    bool result = false
+    int dow = dayofweek(time, "America/New_York")
+    if dow >= dayofweek.monday and dow <= dayofweek.friday
+        int y = year(time, "America/New_York")
+        int m = month(time, "America/New_York")
+        int d = dayofmonth(time, "America/New_York")
+        int t1 = timestamp("America/New_York", y, m, d, 8, 30)
+        int t2 = timestamp("America/New_York", y, m, d, 10, 0)
+        int t3 = timestamp("America/New_York", y, m, d, 14, 0)
+        result := (time <= t1 and t1 < time_close) or (time <= t2 and t2 < time_close) or (time <= t3 and t3 < time_close)
+    result
+
+add_data_levels() =>
+    array.push(g_liquidity_array, Liquidity.new(level = high, original_level = high, liq_type = "Data High", quality = "na", bar_idx = bar_index, last_touch_bar = bar_index, touch_count = 1, is_swept = false, swept_bar = 0, is_valid = true, line_id = na, label_id = na, is_decided = true))
+    array.push(g_liquidity_array, Liquidity.new(level = low, original_level = low, liq_type = "Data Low", quality = "na", bar_idx = bar_index, last_touch_bar = bar_index, touch_count = 1, is_swept = false, swept_bar = 0, is_valid = true, line_id = na, label_id = na, is_decided = true))
+
+detect_data_candle() =>
+    if barstate.isconfirmed and timeframe.in_seconds(timeframe.period) <= DATA_MAX_TF_SECS and not na(atr_prev)
+        float candle_range = high - low
+        float pend_bar = array.get(g_data_pending, 0)
+        if not na(pend_bar)
+            // Candle after a quiet release candle
+            if candle_range >= array.get(g_data_pending, 1) * DATA_RANGE_ATR
+                add_data_levels()
+            array.set(g_data_pending, 0, na)
+        else if is_release_bar()
+            if candle_range >= atr_prev * DATA_RANGE_ATR
+                add_data_levels()
+            else
+                array.set(g_data_pending, 0, bar_index)
+                array.set(g_data_pending, 1, atr_prev)
 
 // ─────────────────────────────────────────────────────────────────────
 // LRLR (trendline liquidity) — built from the chart-TF swings, no lookback setting
@@ -1732,14 +1793,14 @@ find_dol(bool is_bullish_ifvg, float current_price) =>
                 if not liq.is_swept and liq.is_valid
                     if is_bullish_ifvg
                         // For bullish IFVG, target BSL (highs above current price)
-                        if (liq.liq_type == "EQH" or liq.liq_type == "ITH") and liq.level > current_price
+                        if is_bsl(liq) and liq.level > current_price
                             distance = liq.level - current_price
                             if distance < best_distance
                                 best_distance := distance
                                 result := liq
                     else
                         // For bearish IFVG, target SSL (lows below current price)
-                        if (liq.liq_type == "EQL" or liq.liq_type == "ITL") and liq.level < current_price
+                        if is_ssl(liq) and liq.level < current_price
                             distance = current_price - liq.level
                             if distance < best_distance
                                 best_distance := distance
@@ -1777,7 +1838,7 @@ check_setup_sweep(bool looking_for_bsl, int window_start) =>
         if arr_size > 0
             for i = 0 to arr_size - 1
                 liq = array.get(g_liquidity_array, i)
-                bool side_match = looking_for_bsl ? (liq.liq_type == "EQH" or liq.liq_type == "ITH") : (liq.liq_type == "EQL" or liq.liq_type == "ITL")
+                bool side_match = looking_for_bsl ? is_bsl(liq) : is_ssl(liq)
                 bool taken = liq.is_swept or (not liq.is_valid and not na(liq.mitigated_bar))
                 if result != 1 and side_match and taken
                     int take_bar = liq.is_swept ? liq.swept_bar : liq.mitigated_bar
@@ -2883,7 +2944,8 @@ nth_smallest(array<float> values, int n) =>
 is_liq_displayable(Liquidity liq) =>
     bool is_eq = liq.liq_type == "EQH" or liq.liq_type == "EQL"
     bool is_internal = liq.liq_type == "ITH" or liq.liq_type == "ITL"
-    bool type_on = (is_eq and i_show_eqh_eql) or (is_internal and i_show_ith_itl)
+    bool is_data = liq.liq_type == "Data High" or liq.liq_type == "Data Low"
+    bool type_on = (is_eq and i_show_eqh_eql) or (is_internal and i_show_ith_itl) or (is_data and i_show_data)
     bool quality_ok = not (is_eq and i_show_perfect_only and liq.quality == "relative")
     type_on and quality_ok
 
@@ -2895,29 +2957,37 @@ render_liquidity_lines() =>
     if liq_size > 0
         // Pass 1: distance cut-offs so only the nearest LIQ_DRAW_PER_SIDE live levels
         // above and below price are drawn (all live levels stay in memory)
-        // Strong and weak levels are ranked separately, so a Strong High/Low is never
-        // hidden behind nearer weak pullback levels
+        // Strong, weak and Data levels are ranked separately, so a Strong High/Low or a
+        // news candle level is never hidden behind nearer weak pullback levels
         array<float> above_strong = array.new<float>()
         array<float> above_weak = array.new<float>()
         array<float> below_strong = array.new<float>()
         array<float> below_weak = array.new<float>()
+        array<float> above_data = array.new<float>()
+        array<float> below_data = array.new<float>()
         for i = 0 to liq_size - 1
             Liquidity lq = array.get(g_liquidity_array, i)
             if is_liq_displayable(lq) and lq.is_valid and not lq.is_swept
                 bool lq_above = lq.level >= close
+                bool lq_data = lq.liq_type == "Data High" or lq.liq_type == "Data Low"
                 float lq_dist = math.abs(lq.level - close)
-                if lq_above and lq.is_strong
-                    array.push(above_strong, lq_dist)
-                if lq_above and not lq.is_strong
-                    array.push(above_weak, lq_dist)
-                if not lq_above and lq.is_strong
-                    array.push(below_strong, lq_dist)
-                if not lq_above and not lq.is_strong
-                    array.push(below_weak, lq_dist)
+                if lq_data
+                    array.push(lq_above ? above_data : below_data, lq_dist)
+                else
+                    if lq_above and lq.is_strong
+                        array.push(above_strong, lq_dist)
+                    if lq_above and not lq.is_strong
+                        array.push(above_weak, lq_dist)
+                    if not lq_above and lq.is_strong
+                        array.push(below_strong, lq_dist)
+                    if not lq_above and not lq.is_strong
+                        array.push(below_weak, lq_dist)
         float above_strong_cut = nth_smallest(above_strong, LIQ_DRAW_PER_SIDE)
         float above_weak_cut = nth_smallest(above_weak, LIQ_DRAW_PER_SIDE)
         float below_strong_cut = nth_smallest(below_strong, LIQ_DRAW_PER_SIDE)
         float below_weak_cut = nth_smallest(below_weak, LIQ_DRAW_PER_SIDE)
+        float above_data_cut = nth_smallest(above_data, LIQ_DRAW_PER_SIDE)
+        float below_data_cut = nth_smallest(below_data, LIQ_DRAW_PER_SIDE)
         // Pass 2: draw
         array<float> placed_y = array.new<float>()
         array<label> placed_lbl = array.new<label>()
@@ -2925,13 +2995,14 @@ render_liquidity_lines() =>
             if i < liq_size
                 liq = array.get(g_liquidity_array, i)
                 bool is_mitigated = liq.is_swept or not liq.is_valid
+                bool is_data_lvl = liq.liq_type == "Data High" or liq.liq_type == "Data Low"
                 bool is_near = false
                 if not is_mitigated
                     if liq.level >= close
-                        float cut_a = liq.is_strong ? above_strong_cut : above_weak_cut
+                        float cut_a = is_data_lvl ? above_data_cut : liq.is_strong ? above_strong_cut : above_weak_cut
                         is_near := not na(cut_a) and liq.level - close <= cut_a
                     else
-                        float cut_b = liq.is_strong ? below_strong_cut : below_weak_cut
+                        float cut_b = is_data_lvl ? below_data_cut : liq.is_strong ? below_strong_cut : below_weak_cut
                         is_near := not na(cut_b) and close - liq.level <= cut_b
                 bool should_draw = is_liq_displayable(liq) and (is_mitigated ? i_show_mitigated_liq : is_near)
                 // Delete drawings and skip levels that are hidden, far from price, or mitigated (unless shown)
@@ -2977,6 +3048,17 @@ render_liquidity_lines() =>
                     else
                         line_color := i_ithl_color
                         line_style := line.style_dashed
+
+                else if is_data_lvl
+                    if liq.is_swept
+                        line_color := color.new(DATA_COLOR, 70)  // Faded if swept
+                        line_style := line.style_dotted
+                    else if not liq.is_valid
+                        line_color := color.new(color.gray, 70)  // Gray if broken through
+                        line_style := line.style_dotted
+                    else
+                        line_color := DATA_COLOR
+                        line_style := line.style_solid
 
                 // Strong High/Low: thicker line
                 if liq.is_strong
@@ -3226,6 +3308,7 @@ if i_show_indicator
     check_equal_highs()
     check_equal_lows()
     create_internal_levels()
+    detect_data_candle()
     cleanup_liquidity_array()
     update_lrlr()
 
@@ -3708,11 +3791,14 @@ if barstate.islast
         int dbg_undecided = 0
         int dbg_disp = 0
         int dbg_drawn = 0
+        int dbg_data_live = 0
         for dq in g_liquidity_array
             bool dq_live = dq.is_valid and not dq.is_swept
             bool dq_internal = dq.liq_type == "ITH" or dq.liq_type == "ITL"
             if dq_live
                 dbg_live += 1
+            if dq_live and (dq.liq_type == "Data High" or dq.liq_type == "Data Low")
+                dbg_data_live += 1
             if dq_live and dq_internal
                 dbg_ithl_live += 1
             if dq_live and dq.is_strong
@@ -3723,7 +3809,7 @@ if barstate.islast
                 dbg_disp += 1
             if not na(dq.line_id)
                 dbg_drawn += 1
-        string dbg_txt = "DEBUG" + "\nbars processed: " + str.tostring(bar_index) + "\nATR: " + str.tostring(atr_value, format.mintick) + "\nshow ITH/ITL: " + str.tostring(i_show_ith_itl) + "\ncandidates H/L: " + str.tostring(array.get(g_dbg_swing, 0)) + "/" + str.tostring(array.get(g_dbg_swing, 3)) + "\nconfirmed H/L: " + str.tostring(array.get(g_dbg_swing, 1)) + "/" + str.tostring(array.get(g_dbg_swing, 4)) + "\ncancelled H/L: " + str.tostring(array.get(g_dbg_swing, 2)) + "/" + str.tostring(array.get(g_dbg_swing, 5)) + "\npending H/L: " + str.tostring(array.size(g_pending_highs)) + "/" + str.tostring(array.size(g_pending_lows)) + "\nswings H/L: " + str.tostring(array.size(g_swing_highs)) + "/" + str.tostring(array.size(g_swing_lows)) + "\nliq total/live: " + str.tostring(array.size(g_liquidity_array)) + "/" + str.tostring(dbg_live) + "\nlive ITH/ITL: " + str.tostring(dbg_ithl_live) + "\nlive strong: " + str.tostring(dbg_strong) + "\nundecided: " + str.tostring(dbg_undecided) + "\ndisplayable: " + str.tostring(dbg_disp) + "\nwith line drawn: " + str.tostring(dbg_drawn)
+        string dbg_txt = "DEBUG" + "\nbars processed: " + str.tostring(bar_index) + "\nATR: " + str.tostring(atr_value, format.mintick) + "\nshow ITH/ITL: " + str.tostring(i_show_ith_itl) + "\ncandidates H/L: " + str.tostring(array.get(g_dbg_swing, 0)) + "/" + str.tostring(array.get(g_dbg_swing, 3)) + "\nconfirmed H/L: " + str.tostring(array.get(g_dbg_swing, 1)) + "/" + str.tostring(array.get(g_dbg_swing, 4)) + "\ncancelled H/L: " + str.tostring(array.get(g_dbg_swing, 2)) + "/" + str.tostring(array.get(g_dbg_swing, 5)) + "\npending H/L: " + str.tostring(array.size(g_pending_highs)) + "/" + str.tostring(array.size(g_pending_lows)) + "\nswings H/L: " + str.tostring(array.size(g_swing_highs)) + "/" + str.tostring(array.size(g_swing_lows)) + "\nliq total/live: " + str.tostring(array.size(g_liquidity_array)) + "/" + str.tostring(dbg_live) + "\nlive ITH/ITL: " + str.tostring(dbg_ithl_live) + "\nlive strong: " + str.tostring(dbg_strong) + "\nundecided: " + str.tostring(dbg_undecided) + "\ndisplayable: " + str.tostring(dbg_disp) + "\nwith line drawn: " + str.tostring(dbg_drawn) + "\nlive Data H/L: " + str.tostring(dbg_data_live)
         int dbg_pd_live = 0
         for pq in g_pd_liquidity_array
             if pq.is_valid and not pq.is_swept
