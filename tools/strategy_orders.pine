@@ -18,6 +18,21 @@ string GROUP_STRAT = "═══ Strategy ═══"
 i_strat_from = input.time(timestamp("2015-01-01T00:00:00"), "Trade From", group=GROUP_STRAT,
      tooltip="Only open trades from this date. Use with Trade Until to test one period and confirm on another")
 i_strat_to   = input.time(timestamp("2099-12-31T00:00:00"), "Trade Until", group=GROUP_STRAT)
+string GROUP_PROP = "═══ Prop Firm & Returns ═══"
+i_show_returns  = input.bool(true, "Show Monthly Returns Table", group=GROUP_PROP)
+i_prop_on       = input.bool(true, "Prop Firm Check", group=GROUP_PROP)
+i_prop_dd       = input.float(2000.0, "Max Drawdown (USD)", minval=1.0, step=100.0, group=GROUP_PROP)
+i_prop_dd_type  = input.string("Trailing EOD", "Drawdown Type", options=["Trailing EOD", "Trailing Intraday", "Static"], group=GROUP_PROP,
+     tooltip="Trailing EOD: limit follows the highest end-of-day balance (e.g. Topstep). Trailing Intraday: follows the highest balance during the day (e.g. Apex). Static: fixed below the starting balance")
+i_prop_lock     = input.bool(true, "Trailing Locks Above Start", group=GROUP_PROP,
+     tooltip="Once the trailing limit reaches the starting balance + Lock Offset it stays there (Lucid: $50,100 on 50K)")
+i_prop_lock_off = input.float(100.0, "Lock Offset (USD)", minval=0.0, step=50.0, group=GROUP_PROP)
+i_prop_daily    = input.float(0.0, "Daily Loss Limit (USD, 0 = off)", minval=0.0, step=100.0, group=GROUP_PROP)
+i_prop_target   = input.float(3000.0, "Profit Target (USD, 0 = off)", minval=0.0, step=100.0, group=GROUP_PROP)
+i_prop_consist  = input.float(50.0, "Consistency: Best Day Max % of Profit (0 = off)", minval=0.0, maxval=100.0, step=5.0, group=GROUP_PROP,
+     tooltip="Evaluation passes only when the best day's profit is at most this % of the total profit (Lucid Flex: 50%). Until then trading continues")
+i_max_qty       = input.int(40, "Max Contracts (0 = no cap)", minval=0, group=GROUP_PROP,
+     tooltip="Caps the position size (Lucid Flex 50K: 4 minis or 40 micros)")
 
 // Position size in the chart symbol's units for the risk setting (0 = can't size)
 strategy_qty(float entry, float stop_px) =>
@@ -46,8 +61,158 @@ if i_show_indicator and barstate.isconfirmed
         IFVG sf = array.get(g_ifvg_array, strat_n - 1)
         if sf.inversion_bar == bar_index and not na(sf.trade) and grade_meets_minimum(sf.grade, i_stats_min_grade)
             Trade nt = sf.trade
-            float q = strategy_qty(nt.entry, nt.stop_px)
+            float q = i_max_qty > 0 ? math.min(strategy_qty(nt.entry, nt.stop_px), i_max_qty) : strategy_qty(nt.entry, nt.stop_px)
             if q > 0
                 strategy.entry("IFVG", nt.is_bull ? strategy.long : strategy.short, qty=q, comment=nt.tag)
                 strategy.exit("Exit", "IFVG", stop=nt.sl, limit=nt.tp, comment_loss="hard stop", comment_profit="TP")
                 g_strat_trade := nt
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 14: MONTHLY RETURNS, STREAKS & PROP FIRM CHECK (strategy build only)
+// ══════════════════════════════════════════════════════════════════════
+// Monthly returns: net P&L (after commission) of trades closed in each month, New York time.
+// Streaks: losses / wins in a row; breakeven exits neither extend nor break a streak.
+// Prop firm check: back-to-back evaluations on the strategy's equity.
+// Defaults = Lucid Flex 50K: $3,000 target, $2,000 EOD trailing max loss locking at
+// start + $100, no daily limit, 50% consistency, max 40 micros.
+// RULE 1: An evaluation fails when equity (open trade included, at candle close) falls to
+//         the drawdown limit, or the day's loss reaches the daily loss limit.
+// RULE 2: It passes when closed profit reaches the profit target and the best day's
+//         closed profit is at most the consistency % of the evaluation's profit.
+// RULE 3: After a pass or fail the next evaluation starts from the current equity.
+// Drawdown limit: Static = start - max drawdown. Trailing = highest equity - max drawdown
+// (Trailing EOD: highest end-of-day equity; Intraday: highest candle-close equity),
+// and it stops rising at the starting balance when "Stops at Starting Balance" is on.
+// NOTE: Intraday trailing uses candle closes, not every tick, so it is slightly optimistic.
+// ══════════════════════════════════════════════════════════════════════
+
+// "+1.2k" / "-350"
+fmt_k(float v) =>
+    string sign = v >= 0 ? "+" : "-"
+    float a = math.abs(v)
+    a >= 1000 ? sign + str.tostring(a / 1000.0, "0.0") + "k" : sign + str.tostring(a, "0")
+
+var map<int, float> g_month_pnl = map.new<int, float>()   // key = year * 100 + month
+var int g_closed_seen = 0
+var int g_loss_run = 0
+var int g_loss_max = 0
+var int g_win_run = 0
+var int g_win_max = 0
+var float p_base = na        // Equity at the start of the current evaluation
+var float p_peak = na        // Highest equity used for the trailing limit
+var float p_day_start = na   // Equity at the start of the trading day
+var float p_last_eq = na     // Previous candle's equity
+var int p_start_time = na
+var int p_pass = 0
+var int p_fail = 0
+var float p_pass_days = 0.0
+var int p_first_fail = na
+var float p_day_start_closed = na  // Closed balance at the start of the trading day
+var float p_last_closed = na
+var float p_best_day = 0.0         // Best day's closed profit in the current evaluation
+bool strat_new_day = ta.change(time("D")) != 0
+
+if i_show_indicator and barstate.isconfirmed
+    // Closed trades → monthly P&L and streaks
+    if strategy.closedtrades > g_closed_seen
+        for ci = g_closed_seen to strategy.closedtrades - 1
+            float pnl = strategy.closedtrades.profit(ci)
+            int xt = strategy.closedtrades.exit_time(ci)
+            int mkey = year(xt, "America/New_York") * 100 + month(xt, "America/New_York")
+            g_month_pnl.put(mkey, nz(g_month_pnl.get(mkey)) + pnl)
+            if strategy.closedtrades.exit_comment(ci) != "BE"
+                if pnl < 0
+                    g_loss_run += 1
+                    g_win_run := 0
+                    g_loss_max := int(math.max(g_loss_max, g_loss_run))
+                else
+                    g_win_run += 1
+                    g_loss_run := 0
+                    g_win_max := int(math.max(g_win_max, g_win_run))
+        g_closed_seen := strategy.closedtrades
+    // Prop firm evaluations
+    if i_prop_on
+        float eq = strategy.equity
+        float closed_bal = strategy.initial_capital + strategy.netprofit
+        if na(p_base)
+            p_base := eq
+            p_peak := eq
+            p_day_start := eq
+            p_last_eq := eq
+            p_start_time := time
+            p_day_start_closed := closed_bal
+            p_last_closed := closed_bal
+        if strat_new_day
+            p_best_day := math.max(p_best_day, p_last_closed - p_day_start_closed)
+            p_day_start_closed := p_last_closed
+            p_day_start := p_last_eq
+            if i_prop_dd_type == "Trailing EOD"
+                p_peak := math.max(p_peak, p_last_eq)
+        if i_prop_dd_type == "Trailing Intraday"
+            p_peak := math.max(p_peak, eq)
+        float limit = i_prop_dd_type == "Static" ? p_base - i_prop_dd : (i_prop_lock ? math.min(p_peak - i_prop_dd, p_base + i_prop_lock_off) : p_peak - i_prop_dd)
+        bool failed = eq <= limit or (i_prop_daily > 0 and eq - p_day_start <= -i_prop_daily)
+        float eval_profit = closed_bal - p_base
+        float best_day = math.max(p_best_day, closed_bal - p_day_start_closed)
+        bool consistent = i_prop_consist <= 0 or best_day <= eval_profit * i_prop_consist / 100.0
+        bool passed = not failed and i_prop_target > 0 and eval_profit >= i_prop_target and consistent
+        if failed or passed
+            if failed
+                if na(p_first_fail)
+                    p_first_fail := time
+                p_fail += 1
+            else
+                p_pass_days += (time - p_start_time) / 86400000.0
+                p_pass += 1
+            p_base := eq
+            p_peak := eq
+            p_day_start := eq
+            p_start_time := time
+            p_day_start_closed := closed_bal
+            p_best_day := 0.0
+        p_last_eq := eq
+        p_last_closed := closed_bal
+
+// Table: one row per year (last 15), a column per month, the year's total, then streaks and prop results
+var table g_ret_table = table.new(position.bottom_left, 14, 20, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+if barstate.islast
+    table.clear(g_ret_table, 0, 0, 13, 19)
+    if i_show_returns
+        array<string> mnames = array.from("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+        table.cell(g_ret_table, 0, 0, "Year", text_color=color.gray, text_size=size.tiny)
+        for mi = 0 to 11
+            table.cell(g_ret_table, mi + 1, 0, array.get(mnames, mi), text_color=color.gray, text_size=size.tiny)
+        table.cell(g_ret_table, 13, 0, "Total", text_color=color.gray, text_size=size.tiny)
+        array<int> years = array.new<int>()
+        for k in g_month_pnl.keys()
+            int ky = int(math.floor(k / 100))
+            if not array.includes(years, ky)
+                array.push(years, ky)
+        array.sort(years, order.ascending)
+        int ny = array.size(years)
+        int first_y = int(math.max(0, ny - 15))
+        int row = 1
+        if ny > 0
+            for yi = first_y to ny - 1
+                int yr = array.get(years, yi)
+                float ytot = 0.0
+                table.cell(g_ret_table, 0, row, str.tostring(yr), text_color=color.white, text_size=size.tiny)
+                for mi = 1 to 12
+                    float mv = g_month_pnl.get(yr * 100 + mi)
+                    if not na(mv)
+                        ytot += mv
+                        table.cell(g_ret_table, mi, row, fmt_k(mv), text_color=(mv >= 0 ? i_bullish_color : i_bearish_color), text_size=size.tiny)
+                table.cell(g_ret_table, 13, row, fmt_k(ytot), text_color=(ytot >= 0 ? i_bullish_color : i_bearish_color), text_size=size.tiny)
+                row += 1
+        string streak_txt = "Max losses in a row: " + str.tostring(g_loss_max) + " · Max wins in a row: " + str.tostring(g_win_max) + " (BE exits not counted)"
+        table.cell(g_ret_table, 0, row, streak_txt, text_color=color.white, text_size=size.tiny, text_halign=text.align_left)
+        table.merge_cells(g_ret_table, 0, row, 13, row)
+        row += 1
+        if i_prop_on
+            string rule_txt = "Prop: " + i_prop_dd_type + " $" + str.tostring(i_prop_dd, "#,##0") + (i_prop_daily > 0 ? " · daily $" + str.tostring(i_prop_daily, "#,##0") : "") + (i_prop_target > 0 ? " · target $" + str.tostring(i_prop_target, "#,##0") : "") + (i_prop_consist > 0 ? " · consistency " + str.tostring(i_prop_consist, "0") + "%" : "") + (i_max_qty > 0 ? " · max " + str.tostring(i_max_qty) + " contracts" : "")
+            string res_txt = "Passed " + str.tostring(p_pass) + " · Failed " + str.tostring(p_fail) + (p_pass > 0 ? " · avg " + str.tostring(p_pass_days / p_pass, "0") + " days to pass" : "") + " · first fail: " + (na(p_first_fail) ? "never" : str.format_time(p_first_fail, "yyyy-MM-dd", "America/New_York"))
+            table.cell(g_ret_table, 0, row, rule_txt, text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+            table.merge_cells(g_ret_table, 0, row, 13, row)
+            row += 1
+            table.cell(g_ret_table, 0, row, res_txt, text_color=(p_fail == 0 ? i_bullish_color : color.white), text_size=size.tiny, text_halign=text.align_left)
+            table.merge_cells(g_ret_table, 0, row, 13, row)

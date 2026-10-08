@@ -3417,7 +3417,8 @@ render_position() =>
                     3 => "Breakeven (0R)"
                     => (t.be_moved ? "Open, stop at BE " : "Open ") + money + "(" + r_txt + ")"
                 string ticket = side + size_txt + " @ " + str.tostring(t.entry, format.mintick) + "\nStop: close beyond " + str.tostring(t.stop_px, format.mintick) + "\nHard stop " + str.tostring(t.sl, format.mintick) + "\nTP " + str.tostring(t.tp, format.mintick) + " (" + rr_txt + ")" + (sized ? "\nRisk " + usd(risk_used) + " · Reward " + usd(risk_used * rr_tp) : "")
-                array.set(g_pos_label, 0, label.new(right_x, t.entry, side + size_txt + "\n" + l2 + "\n" + l3, style=label.style_label_left, color=color.new(color.black, 30), textcolor=color.white, size=size.small, textalign=text.align_left, tooltip=ticket))
+                // Label always at the right edge (past the boxes) so it never covers the setup's labels
+                array.set(g_pos_label, 0, label.new(bar_index + i_extend_bars, t.entry, side + size_txt + "\n" + l2 + "\n" + l3, style=label.style_label_left, color=color.new(color.black, 30), textcolor=color.white, size=size.small, textalign=text.align_left, tooltip=ticket))
 
 // ─────────────────────────────────────────────────────────────────────
 // Win/loss stats per grade over the loaded chart history
