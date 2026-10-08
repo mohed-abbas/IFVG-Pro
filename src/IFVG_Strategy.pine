@@ -27,11 +27,19 @@
 // ╚══════════════════════════════════════════════════════════════════╝
 
 //@version=6
-indicator("IFVG Indicator", shorttitle="IFVG", overlay=true,
-          max_bars_back=500,
-          max_boxes_count=500,
-          max_lines_count=500,
-          max_labels_count=500)
+// GENERATED from src/IFVG_Indicator.pine by tools/build_strategy.py - do not edit by hand
+strategy("IFVG Strategy", shorttitle="IFVG Strat", overlay=true,
+         max_bars_back=500,
+         max_boxes_count=500,
+         max_lines_count=500,
+         max_labels_count=500,
+         initial_capital=10000,
+         currency=currency.USD,
+         pyramiding=0,
+         process_orders_on_close=true,
+         commission_type=strategy.commission.cash_per_contract,
+         commission_value=0.62,
+         slippage=1)
 
 // ══════════════════════════════════════════════════════════════════════
 // SECTION 1: TYPE DEFINITIONS
@@ -4160,3 +4168,56 @@ if barstate.islast
                 dbg_pd_live += 1
         dbg_txt := dbg_txt + "\nPD swings H/L: " + str.tostring(array.size(g_pd_swing_highs)) + "/" + str.tostring(array.size(g_pd_swing_lows)) + "\nPD levels total/live: " + str.tostring(array.size(g_pd_liquidity_array)) + "/" + str.tostring(dbg_pd_live) + "\nPD lag bars: " + str.tostring(g_pd_lag_bars) + "\nPD range: " + (na(g_current_range) ? "none" : (g_current_range.is_valid ? "valid" : "invalid"))
         g_dbg_label := label.new(bar_index + 5, high, dbg_txt, style=label.style_label_left, color=color.new(color.black, 10), textcolor=color.white, size=size.normal)
+
+// ══════════════════════════════════════════════════════════════════════
+// SECTION 13: STRATEGY ORDERS (strategy build only, see tools/build_strategy.py)
+// ══════════════════════════════════════════════════════════════════════
+// One position at a time, same open-stop model as the stats table.
+// RULE 1: Enter at the inversion close (process_orders_on_close) of a setup that meets
+//         "Min Grade (Stats & Strategy)", sized from entry to the IFVG box edge so a
+//         close beyond the box costs about the risk setting.
+// RULE 2: Exit order: TP limit + hard stop (the SL line); the stop moves to entry once
+//         the BE level is reached.
+// RULE 3: Any candle closing beyond the IFVG box closes the trade at that close.
+// NOTE: Futures size in whole contracts of the chart symbol. Run on the micro (MNQ1!)
+//       unless the risk covers a full contract; setups sized at 0 are skipped.
+// NOTE: Each entry's comment carries the setup tag (grade, sweep, delivery, scores,
+//       PD zone, LRLR, session, HTF bias) for the exported List of Trades.
+// ══════════════════════════════════════════════════════════════════════
+string GROUP_STRAT = "═══ Strategy ═══"
+i_strat_from = input.time(timestamp("2015-01-01T00:00:00"), "Trade From", group=GROUP_STRAT,
+     tooltip="Only open trades from this date. Use with Trade Until to test one period and confirm on another")
+i_strat_to   = input.time(timestamp("2099-12-31T00:00:00"), "Trade Until", group=GROUP_STRAT)
+
+// Position size in the chart symbol's units for the risk setting (0 = can't size)
+strategy_qty(float entry, float stop_px) =>
+    float per_unit = math.abs(entry - stop_px) * syminfo.pointvalue * g_fx
+    float qty = 0.0
+    if per_unit > 0
+        float raw = risk_budget() / per_unit
+        qty := (syminfo.type == "crypto" or syminfo.type == "cfd") ? math.floor(raw * 1000.0) / 1000.0 : math.floor(raw)
+    qty
+
+var Trade g_strat_trade = na
+bool strat_in_window = time >= i_strat_from and time <= i_strat_to
+if i_show_indicator and barstate.isconfirmed
+    // Manage the open trade
+    if strategy.position_size != 0 and not na(g_strat_trade)
+        Trade st = g_strat_trade
+        if st.result == 2
+            strategy.close("IFVG", comment="close beyond box")
+        else
+            strategy.exit("Exit", "IFVG", stop=(st.be_moved ? st.entry : st.sl), limit=st.tp, comment_loss=(st.be_moved ? "BE" : "hard stop"), comment_profit="TP")
+    if strategy.position_size == 0
+        g_strat_trade := na
+    // New entry on the setup formed this candle
+    int strat_n = array.size(g_ifvg_array)
+    if strategy.position_size == 0 and strat_in_window and strat_n > 0
+        IFVG sf = array.get(g_ifvg_array, strat_n - 1)
+        if sf.inversion_bar == bar_index and not na(sf.trade) and grade_meets_minimum(sf.grade, i_stats_min_grade)
+            Trade nt = sf.trade
+            float q = strategy_qty(nt.entry, nt.stop_px)
+            if q > 0
+                strategy.entry("IFVG", nt.is_bull ? strategy.long : strategy.short, qty=q, comment=nt.tag)
+                strategy.exit("Exit", "IFVG", stop=nt.sl, limit=nt.tp, comment_loss="hard stop", comment_profit="TP")
+                g_strat_trade := nt
