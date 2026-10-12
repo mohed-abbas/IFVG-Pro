@@ -387,12 +387,14 @@ Two FVGs at completely different price levels got merged just because they were 
 **Problem:** The bias was the direction of the most recently inverted HTF IFVG. One small opposite IFVG flipped it against a clear HTF trend, so it changed several times a day and the filter hid valid setups.
 
 **Decisions:**
-- **ICT market structure on the HTF**, evaluated on HTF candles via `request.security` (2 calls: HTF1, HTF2).
+- **ICT market structure on the HTF**, evaluated on HTF1 candles via `request.security` (1 call).
 - Swings: same automatic rule as the chart (3-candle swing, confirmed by a close 1 ATR away).
 - Breaks count on a **body close** only, never a wick.
 - Each break sets a **protected level**: the start of the leg that broke the swing (lowest low since the broken swing high for bullish, mirrored for bearish).
 - **Bias flips only on a close through the protected level (MSS).** Internal pullback lows/highs being taken do not flip it. A BOS in the trend direction moves the protected level.
-- HTF1 decides; HTF2 only until HTF1 has had its first break.
+- **External structure only (RULE 5):** in an uptrend a new swing high only becomes the BOS level if it is higher than the stored one; lower highs inside a pullback (internal structure) never move the protected low. Downtrend mirrored.
+- HTF1 only. The HTF2 fallback was dropped: it only mattered until HTF1's first break.
+- **Performance:** leg extremes are running values updated once per HTF bar (no lookback loops), 1 `request.security` call. The first version (2 calls + 300-bar loops) hit RE10110 on NQ1! H1.
 - Value of the last **closed** HTF candle (`[1]` + `lookahead_on`): no intrabar repainting, changes at most once per HTF candle.
 - Dashboard shows the bias and its flip level, e.g. `BULLISH · MSS 1.0850`.
 - Uses unchanged: setup filter ("Filter LTF by HTF Bias") and the `bi=` trade tag. Not part of the grade.

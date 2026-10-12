@@ -950,7 +950,7 @@ int htf_bar_idx = int(htf_bar_idx_raw)
 int htf2_bar_idx = int(htf2_bar_idx_raw)
 
 // ─── HTF market structure (bias) ─────────────────────────────
-// ICT structure evaluated on HTF candles. 2 calls (HTF1, HTF2), 2 tuple elements each.
+// ICT structure evaluated on HTF1 candles. 1 call, 2 tuple elements.
 // Swings use the chart's automatic rule: 3-candle swing, confirmed by a close
 // SWING_CONFIRM_ATR x ATR away, cancelled if traded through before confirmation.
 // RULE 1: only a candle BODY close beyond a level is a break (wicks never count).
@@ -959,88 +959,114 @@ int htf2_bar_idx = int(htf2_bar_idx_raw)
 // RULE 3: bullish bias flips only on a close below the protected low (MSS); taking an
 //         internal low on a pullback does not. Bearish mirrored.
 // RULE 4: a close beyond the next swing in the trend direction (BOS) moves the protected level.
+// RULE 5: BOS levels are external only: the leg high in an uptrend (low in a downtrend).
+//         Internal structure inside a pullback (lower highs / higher lows) is ignored.
 // Returns the bias of the last CLOSED HTF candle (1 bullish, -1 bearish, 0 none yet) and its
 // protected level. Read as [1] with lookahead_on: no intrabar repainting.
-// NOTE: leg searches are capped at STRUCT_SCAN_MAX HTF bars (max_bars_back=500).
-int STRUCT_SCAN_MAX = 300
+// NOTE: no lookback loops — every leg extreme is a running value updated once per HTF bar
+// (the loop version pushed the script past the 20 s limit, RE10110).
 
-// Lowest low and its bar from `from_bar` to the current bar
-leg_low(int from_bar) =>
-    int n = int(math.min(math.max(bar_index - from_bar, 0), STRUCT_SCAN_MAX))
-    float lo = low
-    int lo_bar = bar_index
-    for k = 0 to n
-        if low[k] < lo
-            lo := low[k]
-            lo_bar := bar_index - k
-    [lo, lo_bar]
+// Running extremes of a leg: `ext` = lowest low (track_low) or highest high since the leg
+// started; `opp` = the opposite extreme since `ext` (where the next leg starts).
+type StructLeg
+    float ext
+    int ext_bar
+    float opp
+    int opp_bar
 
-// Highest high and its bar from `from_bar` to the current bar
-leg_high(int from_bar) =>
-    int n = int(math.min(math.max(bar_index - from_bar, 0), STRUCT_SCAN_MAX))
-    float hi = high
-    int hi_bar = bar_index
-    for k = 0 to n
-        if high[k] > hi
-            hi := high[k]
-            hi_bar := bar_index - k
-    [hi, hi_bar]
+leg_update(StructLeg g, bool track_low) =>
+    if (track_low and low < g.ext) or (not track_low and high > g.ext)
+        g.ext := track_low ? low : high
+        g.ext_bar := bar_index
+        g.opp := track_low ? high : low
+        g.opp_bar := bar_index
+    else if (track_low and high > g.opp) or (not track_low and low < g.opp)
+        g.opp := track_low ? high : low
+        g.opp_bar := bar_index
+    g
 
 htf_structure_feed() =>
+    // Pending swing candidates; each carries the leg since its candle (low leg for highs)
     var array<float> pend_h = array.new<float>()
     var array<int> pend_h_bar = array.new<int>()
+    var array<StructLeg> pend_h_leg = array.new<StructLeg>()
     var array<float> pend_l = array.new<float>()
     var array<int> pend_l_bar = array.new<int>()
+    var array<StructLeg> pend_l_leg = array.new<StructLeg>()
     var float sh = na
     var int sh_bar = na
+    var StructLeg sh_leg = na
     var float sl = na
     var int sl_bar = na
+    var StructLeg sl_leg = na
     var int bias = 0
     var float prot = na
     var int prot_bar = na
+    // Leg since the protected level: highest high since a protected low (bullish), mirrored
+    var StructLeg prot_leg = na
     float s_atr = ta.atr(i_fvg_atr_period)
     bool cand_h = high[1] > high[2] and high[1] >= high
     bool cand_l = low[1] < low[2] and low[1] <= low
     if bar_index >= 2 and not na(s_atr)
+        if not na(sh_leg)
+            leg_update(sh_leg, true)
+        if not na(sl_leg)
+            leg_update(sl_leg, false)
+        if not na(prot_leg)
+            leg_update(prot_leg, bias == -1)
         if cand_h
             array.push(pend_h, high[1])
             array.push(pend_h_bar, bar_index - 1)
+            array.push(pend_h_leg, StructLeg.new(low[1], bar_index - 1, high[1], bar_index - 1))
             if array.size(pend_h) > SWING_PENDING_MAX
                 array.shift(pend_h)
                 array.shift(pend_h_bar)
+                array.shift(pend_h_leg)
         if cand_l
             array.push(pend_l, low[1])
             array.push(pend_l_bar, bar_index - 1)
+            array.push(pend_l_leg, StructLeg.new(high[1], bar_index - 1, low[1], bar_index - 1))
             if array.size(pend_l) > SWING_PENDING_MAX
                 array.shift(pend_l)
                 array.shift(pend_l_bar)
+                array.shift(pend_l_leg)
         int ih = 0
         while ih < array.size(pend_h)
             float ph = array.get(pend_h, ih)
+            StructLeg pg = leg_update(array.get(pend_h_leg, ih), true)
             bool resolved = false
             if high > ph
                 resolved := true
             else if close <= ph - s_atr * SWING_CONFIRM_ATR
-                sh := ph
-                sh_bar := array.get(pend_h_bar, ih)
+                // RULE 5: in an uptrend only a higher swing high is external; a lower (internal) one never replaces it
+                if bias != 1 or na(sh) or ph > sh
+                    sh := ph
+                    sh_bar := array.get(pend_h_bar, ih)
+                    sh_leg := pg
                 resolved := true
             if resolved
                 array.remove(pend_h, ih)
                 array.remove(pend_h_bar, ih)
+                array.remove(pend_h_leg, ih)
             ih := resolved ? ih : ih + 1
         int il = 0
         while il < array.size(pend_l)
             float pl = array.get(pend_l, il)
+            StructLeg pg = leg_update(array.get(pend_l_leg, il), false)
             bool resolved = false
             if low < pl
                 resolved := true
             else if close >= pl + s_atr * SWING_CONFIRM_ATR
-                sl := pl
-                sl_bar := array.get(pend_l_bar, il)
+                // RULE 5: in a downtrend only a lower swing low is external; a higher (internal) one never replaces it
+                if bias != -1 or na(sl) or pl < sl
+                    sl := pl
+                    sl_bar := array.get(pend_l_bar, il)
+                    sl_leg := pg
                 resolved := true
             if resolved
                 array.remove(pend_l, il)
                 array.remove(pend_l_bar, il)
+                array.remove(pend_l_leg, il)
             il := resolved ? il : il + 1
         // RULE 1-4: body-close breaks (MSS = against the bias, BOS = with it or from none)
         bool bull_mss = bias == -1 and close > prot
@@ -1048,40 +1074,46 @@ htf_structure_feed() =>
         bool bear_mss = bias == 1 and close < prot
         bool bear_bos = bias != 1 and not na(sl) and close < sl
         if bull_mss or bull_bos
-            // BOS in an uptrend never reaches back past the current protected low
-            int from_bar = bull_mss ? prot_bar : (bias == 1 ? int(math.max(sh_bar, prot_bar)) : sh_bar)
-            [lo, lo_bar] = leg_low(from_bar)
+            // New protected low = start of the breaking leg. A BOS whose swing formed before the
+            // current protected low keeps it (never reaches back past it).
+            StructLeg src = bull_mss ? prot_leg : sh_leg
+            if bull_bos and not bull_mss and bias == 1 and sh_bar < prot_bar
+                src := na
+            if not na(src)
+                prot := src.ext
+                prot_bar := src.ext_bar
+                prot_leg := StructLeg.new(src.opp, src.opp_bar, low, bar_index)
             bias := 1
-            prot := lo
-            prot_bar := lo_bar
             if not na(sh) and close > sh
                 sh := na
                 sh_bar := na
+                sh_leg := na
         else if bear_mss or bear_bos
-            int from_bar = bear_mss ? prot_bar : (bias == -1 ? int(math.max(sl_bar, prot_bar)) : sl_bar)
-            [hi, hi_bar] = leg_high(from_bar)
+            StructLeg src = bear_mss ? prot_leg : sl_leg
+            if bear_bos and not bear_mss and bias == -1 and sl_bar < prot_bar
+                src := na
+            if not na(src)
+                prot := src.ext
+                prot_bar := src.ext_bar
+                prot_leg := StructLeg.new(src.opp, src.opp_bar, high, bar_index)
             bias := -1
-            prot := hi
-            prot_bar := hi_bar
             if not na(sl) and close < sl
                 sl := na
                 sl_bar := na
+                sl_leg := na
     [nz(bias[1]), prot[1]]
 
 [htf_struct_bias, htf_struct_level] = request.security(syminfo.tickerid, i_htf_timeframe, htf_structure_feed(), lookahead = barmerge.lookahead_on)
-[htf2_struct_bias, htf2_struct_level] = request.security(syminfo.tickerid, i_htf_timeframe_2, htf_structure_feed(), lookahead = barmerge.lookahead_on)
 
 // ─────────────────────────────────────────────────────────────────────
-// Combined HTF bias from market structure: HTF1, or HTF2 while HTF1 has none yet
-// Returns "bullish", "bearish", or "neutral"
+// HTF bias from HTF1 market structure. Returns "bullish", "bearish", or "neutral"
 // ─────────────────────────────────────────────────────────────────────
 get_htf_bias() =>
-    int b = htf_struct_bias != 0 ? htf_struct_bias : (i_htf_timeframe_2 != i_htf_timeframe ? htf2_struct_bias : 0)
-    b == 1 ? "bullish" : b == -1 ? "bearish" : "neutral"
+    htf_struct_bias == 1 ? "bullish" : htf_struct_bias == -1 ? "bearish" : "neutral"
 
-// Protected level of the bias in use (a close beyond it flips the bias); na when neutral
+// Protected level of the bias (a close beyond it flips the bias); na when neutral
 get_htf_bias_level() =>
-    htf_struct_bias != 0 ? htf_struct_level : (i_htf_timeframe_2 != i_htf_timeframe and htf2_struct_bias != 0 ? htf2_struct_level : na)
+    htf_struct_bias != 0 ? htf_struct_level : na
 
 // ─── PD timeframe swing data (Phase 2 — PDZ-01) ─────────────
 // 1 call, 4 tuple elements. Security-call budget: 3 -> 4 of 40 after Phase 2.
