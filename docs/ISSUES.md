@@ -376,3 +376,23 @@ Two FVGs at completely different price levels got merged just because they were 
 - **Trade tags** `sx=` (kind of swept level) and `tt=` (kind of target): eq, strong, int, data, session, prevday, lrlr, none — the backtest decides whether session sweeps deserve full weight.
 
 **Settings:** new group and removed "Show Sessions" → saved settings shift; use Defaults → Reset settings once.
+
+---
+
+## Issue 17: HTF Bias Followed the Newest HTF IFVG Instead of HTF Structure
+
+**Status:** Built (2026-10-12), awaiting visual check on TradingView
+**Affected Code:** `htf_structure_feed()` / `leg_low()` / `leg_high()` / `get_htf_bias()` / `get_htf_bias_level()` (Section 5B), dashboard row 8 (Section 11). Same change in the Indicator and the Strategy.
+
+**Problem:** The bias was the direction of the most recently inverted HTF IFVG. One small opposite IFVG flipped it against a clear HTF trend, so it changed several times a day and the filter hid valid setups.
+
+**Decisions:**
+- **ICT market structure on the HTF**, evaluated on HTF candles via `request.security` (2 calls: HTF1, HTF2).
+- Swings: same automatic rule as the chart (3-candle swing, confirmed by a close 1 ATR away).
+- Breaks count on a **body close** only, never a wick.
+- Each break sets a **protected level**: the start of the leg that broke the swing (lowest low since the broken swing high for bullish, mirrored for bearish).
+- **Bias flips only on a close through the protected level (MSS).** Internal pullback lows/highs being taken do not flip it. A BOS in the trend direction moves the protected level.
+- HTF1 decides; HTF2 only until HTF1 has had its first break.
+- Value of the last **closed** HTF candle (`[1]` + `lookahead_on`): no intrabar repainting, changes at most once per HTF candle.
+- Dashboard shows the bias and its flip level, e.g. `BULLISH · MSS 1.0850`.
+- Uses unchanged: setup filter ("Filter LTF by HTF Bias") and the `bi=` trade tag. Not part of the grade.

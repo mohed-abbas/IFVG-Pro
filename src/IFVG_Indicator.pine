@@ -225,7 +225,7 @@ i_show_htf_fvg      = input.bool(true, "Show HTF FVGs", group=GROUP_HTF,
 i_show_htf_ifvg     = input.bool(true, "Show HTF IFVGs", group=GROUP_HTF,
                       tooltip="Display HTF IFVG boxes on chart")
 i_htf_filter_ltf    = input.bool(true, "Filter LTF by HTF Bias", group=GROUP_HTF,
-                      tooltip="Only show LTF setups that align with HTF bias direction")
+                      tooltip="Only show setups that align with the HTF market-structure bias (last body-close break of structure; flips only when the protected high/low is closed through)")
 i_htf_box_opacity   = input.int(75, "HTF Box Opacity (%)", minval=50, maxval=95, group=GROUP_HTF,
                       tooltip="Transparency for HTF boxes. Higher = more transparent")
 i_htf_border_width  = input.int(3, "HTF Border Width", minval=1, maxval=5, group=GROUP_HTF,
@@ -775,22 +775,6 @@ was_liquidity_swept_between(int bar1_idx, int bar2_idx, float ref_level, bool ch
     swept
 
 // ─────────────────────────────────────────────────────────────────────
-// Get combined HTF bias from HTF IFVG arrays
-// Returns "bullish", "bearish", or "neutral"
-// ─────────────────────────────────────────────────────────────────────
-get_htf_bias() =>
-    string htf1_b = "neutral"
-    string htf2_b = "neutral"
-    if array.size(g_htf_ifvg_array) > 0
-        IFVG htf1_r = array.get(g_htf_ifvg_array, array.size(g_htf_ifvg_array) - 1)
-        htf1_b := htf1_r.status == "inverted" ? (htf1_r.is_bullish ? "bullish" : "bearish") : "neutral"
-    if array.size(g_htf2_ifvg_array) > 0
-        IFVG htf2_r = array.get(g_htf2_ifvg_array, array.size(g_htf2_ifvg_array) - 1)
-        htf2_b := htf2_r.status == "inverted" ? (htf2_r.is_bullish ? "bullish" : "bearish") : "neutral"
-    string result = htf1_b != "neutral" ? htf1_b : htf2_b
-    result
-
-// ─────────────────────────────────────────────────────────────────────
 // Merge a new FVG with an existing same-direction FVG if within the same leg
 // Per strategy (Section 7.1): combine series of gaps into one zone,
 // wait for all to be inverted before grading
@@ -964,6 +948,140 @@ int htf_bar_idx = int(htf_bar_idx_raw)
 // HTF 2 Data - Consolidated tuple (7 elements)
 [htf2_high, htf2_low, htf2_close, htf2_high_2, htf2_low_2, htf2_bar_idx_raw, htf2_atr, htf2_prev_col] = request.security(syminfo.tickerid, i_htf_timeframe_2, [high, low, close, high[2], low[2], bar_index, ta.atr(i_fvg_atr_period), math.sign(close[1] - open[1])], lookahead = barmerge.lookahead_off)
 int htf2_bar_idx = int(htf2_bar_idx_raw)
+
+// ─── HTF market structure (bias) ─────────────────────────────
+// ICT structure evaluated on HTF candles. 2 calls (HTF1, HTF2), 2 tuple elements each.
+// Swings use the chart's automatic rule: 3-candle swing, confirmed by a close
+// SWING_CONFIRM_ATR x ATR away, cancelled if traded through before confirmation.
+// RULE 1: only a candle BODY close beyond a level is a break (wicks never count).
+// RULE 2: a break sets the protected level = lowest low (bullish) / highest high (bearish)
+//         since the broken level formed, i.e. the start of the leg that broke it.
+// RULE 3: bullish bias flips only on a close below the protected low (MSS); taking an
+//         internal low on a pullback does not. Bearish mirrored.
+// RULE 4: a close beyond the next swing in the trend direction (BOS) moves the protected level.
+// Returns the bias of the last CLOSED HTF candle (1 bullish, -1 bearish, 0 none yet) and its
+// protected level. Read as [1] with lookahead_on: no intrabar repainting.
+// NOTE: leg searches are capped at STRUCT_SCAN_MAX HTF bars (max_bars_back=500).
+int STRUCT_SCAN_MAX = 300
+
+// Lowest low and its bar from `from_bar` to the current bar
+leg_low(int from_bar) =>
+    int n = int(math.min(math.max(bar_index - from_bar, 0), STRUCT_SCAN_MAX))
+    float lo = low
+    int lo_bar = bar_index
+    for k = 0 to n
+        if low[k] < lo
+            lo := low[k]
+            lo_bar := bar_index - k
+    [lo, lo_bar]
+
+// Highest high and its bar from `from_bar` to the current bar
+leg_high(int from_bar) =>
+    int n = int(math.min(math.max(bar_index - from_bar, 0), STRUCT_SCAN_MAX))
+    float hi = high
+    int hi_bar = bar_index
+    for k = 0 to n
+        if high[k] > hi
+            hi := high[k]
+            hi_bar := bar_index - k
+    [hi, hi_bar]
+
+htf_structure_feed() =>
+    var array<float> pend_h = array.new<float>()
+    var array<int> pend_h_bar = array.new<int>()
+    var array<float> pend_l = array.new<float>()
+    var array<int> pend_l_bar = array.new<int>()
+    var float sh = na
+    var int sh_bar = na
+    var float sl = na
+    var int sl_bar = na
+    var int bias = 0
+    var float prot = na
+    var int prot_bar = na
+    float s_atr = ta.atr(i_fvg_atr_period)
+    bool cand_h = high[1] > high[2] and high[1] >= high
+    bool cand_l = low[1] < low[2] and low[1] <= low
+    if bar_index >= 2 and not na(s_atr)
+        if cand_h
+            array.push(pend_h, high[1])
+            array.push(pend_h_bar, bar_index - 1)
+            if array.size(pend_h) > SWING_PENDING_MAX
+                array.shift(pend_h)
+                array.shift(pend_h_bar)
+        if cand_l
+            array.push(pend_l, low[1])
+            array.push(pend_l_bar, bar_index - 1)
+            if array.size(pend_l) > SWING_PENDING_MAX
+                array.shift(pend_l)
+                array.shift(pend_l_bar)
+        int ih = 0
+        while ih < array.size(pend_h)
+            float ph = array.get(pend_h, ih)
+            bool resolved = false
+            if high > ph
+                resolved := true
+            else if close <= ph - s_atr * SWING_CONFIRM_ATR
+                sh := ph
+                sh_bar := array.get(pend_h_bar, ih)
+                resolved := true
+            if resolved
+                array.remove(pend_h, ih)
+                array.remove(pend_h_bar, ih)
+            ih := resolved ? ih : ih + 1
+        int il = 0
+        while il < array.size(pend_l)
+            float pl = array.get(pend_l, il)
+            bool resolved = false
+            if low < pl
+                resolved := true
+            else if close >= pl + s_atr * SWING_CONFIRM_ATR
+                sl := pl
+                sl_bar := array.get(pend_l_bar, il)
+                resolved := true
+            if resolved
+                array.remove(pend_l, il)
+                array.remove(pend_l_bar, il)
+            il := resolved ? il : il + 1
+        // RULE 1-4: body-close breaks (MSS = against the bias, BOS = with it or from none)
+        bool bull_mss = bias == -1 and close > prot
+        bool bull_bos = bias != -1 and not na(sh) and close > sh
+        bool bear_mss = bias == 1 and close < prot
+        bool bear_bos = bias != 1 and not na(sl) and close < sl
+        if bull_mss or bull_bos
+            // BOS in an uptrend never reaches back past the current protected low
+            int from_bar = bull_mss ? prot_bar : (bias == 1 ? int(math.max(sh_bar, prot_bar)) : sh_bar)
+            [lo, lo_bar] = leg_low(from_bar)
+            bias := 1
+            prot := lo
+            prot_bar := lo_bar
+            if not na(sh) and close > sh
+                sh := na
+                sh_bar := na
+        else if bear_mss or bear_bos
+            int from_bar = bear_mss ? prot_bar : (bias == -1 ? int(math.max(sl_bar, prot_bar)) : sl_bar)
+            [hi, hi_bar] = leg_high(from_bar)
+            bias := -1
+            prot := hi
+            prot_bar := hi_bar
+            if not na(sl) and close < sl
+                sl := na
+                sl_bar := na
+    [nz(bias[1]), prot[1]]
+
+[htf_struct_bias, htf_struct_level] = request.security(syminfo.tickerid, i_htf_timeframe, htf_structure_feed(), lookahead = barmerge.lookahead_on)
+[htf2_struct_bias, htf2_struct_level] = request.security(syminfo.tickerid, i_htf_timeframe_2, htf_structure_feed(), lookahead = barmerge.lookahead_on)
+
+// ─────────────────────────────────────────────────────────────────────
+// Combined HTF bias from market structure: HTF1, or HTF2 while HTF1 has none yet
+// Returns "bullish", "bearish", or "neutral"
+// ─────────────────────────────────────────────────────────────────────
+get_htf_bias() =>
+    int b = htf_struct_bias != 0 ? htf_struct_bias : (i_htf_timeframe_2 != i_htf_timeframe ? htf2_struct_bias : 0)
+    b == 1 ? "bullish" : b == -1 ? "bearish" : "neutral"
+
+// Protected level of the bias in use (a close beyond it flips the bias); na when neutral
+get_htf_bias_level() =>
+    htf_struct_bias != 0 ? htf_struct_level : (i_htf_timeframe_2 != i_htf_timeframe and htf2_struct_bias != 0 ? htf2_struct_level : na)
 
 // ─── PD timeframe swing data (Phase 2 — PDZ-01) ─────────────
 // 1 call, 4 tuple elements. Security-call budget: 3 -> 4 of 40 after Phase 2.
@@ -3771,6 +3889,9 @@ render_dashboard(IFVG latest_ifvg) =>
         if i_enable_htf
             string combined_bias = get_htf_bias()
             htf_bias_text := str.upper(combined_bias)
+            float bias_lvl = get_htf_bias_level()
+            if not na(bias_lvl)
+                htf_bias_text := htf_bias_text + " · MSS " + str.tostring(bias_lvl, format.mintick)
             if combined_bias == "bullish"
                 htf_bias_color := color.green
             else if combined_bias == "bearish"
