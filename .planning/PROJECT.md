@@ -35,7 +35,7 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 - [ ] Premium/Discount zone calculation using HTF swing detection
 - [ ] PD zone grading integration (+1/-1 quality modifier)
 - [ ] PD zone visualization (lines, fills, labels)
-- [ ] Session tracking (Asian, London, NY highs/lows)
+- [ ] Session tracking (Asian, London, NY highs/lows) — built 2026-10-08, awaiting visual check
 - [ ] Session-based data highs/lows as liquidity targets
 - [ ] Enhanced dashboard with PD zone and session info
 - [ ] Alert system for valid entries (grade-filtered)
@@ -100,6 +100,7 @@ Accurately detect and grade IFVG setups so traders can identify high-probability
 | SL hit only on a close beyond the IFVG box; any candle since 2026-10-08 (was opposite-color only) | Wicks to the SL line invalidated good setups; user trades an open stop on any close beyond | ✓ Good |
 | Position size and stats use the open-stop model: 1R = entry → IFVG box edge, SL line = rare hard stop, BE move at the BE level (2026-10-08) | Matches how the user trades; swing-stop 1R made targets too far, box-edge wick stop counted wicks as losses | — Pending |
 | Hard stop only when the SL line lies beyond the IFVG box; on the box edge there is no hard stop, only the close-beyond exit (2026-10-08) | A wick to the box edge counted as a -1R hard stop with no candle closing beyond | ✓ Good |
+| Session liquidity = ICT killzone highs/lows (NY time, DST-safe, fixed: Asia 20-00, London 02-05, NY AM 08:30-11, NY PM 13:30-16; NY Lunch 12-13 box only), killzone boxes for the current trading day, and previous day high/low, sweepable and targetable like EQH/EQL; trade tag records swept level and target kind (sx=, tt=) (2026-10-08) | Core ICT liquidity pools; full grade weight for now, the backtest decides whether session sweeps keep it | — Pending |
 | Delivery = turn tapped an active same-direction FVG formed before the turn; HTF first, chart TF one step lower (2026-10-07) | Old check used the opposite direction and no tap | ✓ Good |
 | LRLR = 3+ consecutive lower highs / higher lows within 0.25 ATR of one line, no close through; target at its origin and confluence for a flat target (2026-10-07) | Trendline liquidity is a strategy target; one toggle, no settings | ✓ Good |
 | barstate.isconfirmed only | Prevents repainting — critical for trading decisions | ✓ Good |

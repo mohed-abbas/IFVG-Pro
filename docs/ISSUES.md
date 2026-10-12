@@ -355,3 +355,24 @@ Two FVGs at completely different price levels got merged just because they were 
 - Rules now: bullish leg = oldest unbroken PD swing high (no later higher high) whose leg is intact; start = lowest swing low since price was last above that high, or, at the top of memory, the chain of higher lows (stop at the first higher one). Bearish mirrored. Both intact → older start wins (a bounce inside a bigger move is a pullback). The far end follows the chart's running high/low until a new PD swing confirms.
 - Performance: legs are cached and rebuilt only when a new PD swing arrives, and the running extreme is tracked incrementally (the per-bar search hit the 20 s execution limit, RE10110).
 - Consequence (accepted): a drop that has not broken the rally's start low shows the whole rally as the range.
+
+---
+
+## Issue 16: Session Liquidity as ICT Killzones
+
+**Status:** Built (2026-10-09), awaiting visual check on TradingView
+**Affected Code:** Killzones & Sessions inputs (Section 2), `kz_id()` / `detect_session_levels()` / `replace_level()` (Section 6), `check_setup_sweep()` + `trade_tag()` (Sections 7–8), `render_liquidity_lines()` (Section 10)
+
+**Goal:** Session highs/lows as liquidity (sweep credit + targets), drawn like ICT killzone boxes (style reference: the user's oneforall indicator).
+
+**Decisions:**
+- **Fixed killzones in New York time** (`hour(time, "America/New_York")`), so daylight saving and the chart's timezone don't matter. No time settings.
+  - Asia 20:00–00:00, London 02:00–05:00, NY AM 08:30–11:00, NY Lunch 12:00–13:00 (box only, no levels), NY PM 13:30–16:00.
+  - NY AM: sources disagree (07:00–10:00 forex, 08:30–11:00 index futures, 09:30–11:00). 08:30 chosen to cover the 8:30 news candle and the 9:30 open.
+- **Levels:** each killzone's high/low (As/Lo/NY/PM H/L) and the previous trading day's high/low (PDH/PDL, day starts 18:00 NY). They are normal liquidity: sweepable and valid targets. A newer level of the same killzone replaces the older live one.
+- **Boxes:** current trading day only, cleared at the day change; shown on 1H and lower. PDH/PDL on every intraday timeframe.
+- **Look settings:** per-killzone on/off + color, box transparency, border, names, killzone line style/width, PDH/PDL color/style/width. The toggles only hide drawings; detection and grading always use all killzones, so stats are the same for everyone.
+- **Tooltip** names the swept level ("Sweep of London Low").
+- **Trade tags** `sx=` (kind of swept level) and `tt=` (kind of target): eq, strong, int, data, session, prevday, lrlr, none — the backtest decides whether session sweeps deserve full weight.
+
+**Settings:** new group and removed "Show Sessions" → saved settings shift; use Defaults → Reset settings once.

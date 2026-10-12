@@ -89,7 +89,7 @@ type LRLR
 type Liquidity
     float level         // Price level (average of touches)
     float original_level // First swing's exact price
-    string liq_type     // "EQH", "EQL", "ITH", "ITL", "Data High", "Data Low"
+    string liq_type     // "EQH", "EQL", "ITH", "ITL", "Data High/Low", "Asia/London/NY AM/NY PM High/Low", "Prev Day High/Low"
     string quality      // "perfect", "relative" (NEW)
     int bar_idx         // Bar where first swing formed
     int last_touch_bar  // Bar of most recent valid touch
@@ -143,6 +143,7 @@ type IFVG
     Liquidity dol       // Draw on Liquidity (target)
     bool has_sweep      // Liquidity sweep present
     bool sweep_reclaimed // true when the sweep closed through the level and got back (no wick-only sweep)
+    string sweep_level = "" // Name of the swept level ("Asia Low", "Strong High", "EQH"...)
     string momentum     // "strong_no_chop", "neutral", "weak_or_choppy"
     bool has_delivery   // true if price delivered from an active FVG during the setup's move
     string delivery_src // delivering FVG as "<TF> <bottom>-<top>" ("" = none, "same TF ..." = chart TF)
@@ -282,6 +283,34 @@ i_show_perfect_only = input.bool(false, "Show Perfect EQL/EQH Only", group=GROUP
                       tooltip="Hide relative EQL/EQH, only show perfect matches")
 
 // ─────────────────────────────────────────────────────────────────────
+// Killzones & Sessions (boxes, killzone and previous day highs/lows)
+// ─────────────────────────────────────────────────────────────────────
+string GROUP_KZ = "═══ Killzones & Sessions ═══"
+i_kz_asia_on        = input.bool(true, "Asia        20:00-00:00", inline="kz1", group=GROUP_KZ,
+                      tooltip="ICT killzones in New York time; daylight saving and your chart timezone are handled automatically. Each killzone's high and low become liquidity (As H/L, Lo H/L, NY H/L, PM H/L) for sweeps and targets until swept or broken. NY Lunch is a box only. Boxes for the current trading day, on 1H and lower. Unticking hides the box and lines; detection and grading run either way")
+i_kz_asia_col       = input.color(#5C6BC0, "", inline="kz1", group=GROUP_KZ)
+i_kz_lon_on         = input.bool(true, "London     02:00-05:00", inline="kz2", group=GROUP_KZ)
+i_kz_lon_col        = input.color(#29B6F6, "", inline="kz2", group=GROUP_KZ)
+i_kz_nyam_on        = input.bool(true, "NY AM      08:30-11:00", inline="kz3", group=GROUP_KZ)
+i_kz_nyam_col       = input.color(#66BB6A, "", inline="kz3", group=GROUP_KZ)
+i_kz_lunch_on       = input.bool(true, "NY Lunch   12:00-13:00", inline="kz4", group=GROUP_KZ)
+i_kz_lunch_col      = input.color(#FDD835, "", inline="kz4", group=GROUP_KZ)
+i_kz_nypm_on        = input.bool(true, "NY PM      13:30-16:00", inline="kz5", group=GROUP_KZ)
+i_kz_nypm_col       = input.color(#8D6E63, "", inline="kz5", group=GROUP_KZ)
+i_kz_transp         = input.int(85, "Box Transparency", minval=0, maxval=100, inline="kzbox", group=GROUP_KZ)
+i_kz_border         = input.bool(true, "Border", inline="kzbox", group=GROUP_KZ)
+i_kz_names          = input.bool(true, "Killzone Names", group=GROUP_KZ,
+                      tooltip="Name inside each killzone box")
+i_kz_lines          = input.bool(true, "Killzone Highs/Lows", inline="kzln", group=GROUP_KZ)
+i_kz_line_style     = input.string("Dotted", "", options=["Solid", "Dashed", "Dotted"], inline="kzln", group=GROUP_KZ)
+i_kz_line_width     = input.int(1, "", minval=1, maxval=4, inline="kzln", group=GROUP_KZ)
+i_pdhl_on           = input.bool(true, "PDH / PDL", inline="pdhl", group=GROUP_KZ,
+                      tooltip="Previous trading day high and low (futures: the day starts at 18:00 New York), on intraday charts. Liquidity for sweeps and targets until swept or broken")
+i_pdhl_col          = input.color(#787B86, "", inline="pdhl", group=GROUP_KZ)
+i_pdhl_style        = input.string("Dashed", "", options=["Solid", "Dashed", "Dotted"], inline="pdhl", group=GROUP_KZ)
+i_pdhl_width        = input.int(1, "", minval=1, maxval=4, inline="pdhl", group=GROUP_KZ)
+
+// ─────────────────────────────────────────────────────────────────────
 // Grading Settings (Phase 2)
 // ─────────────────────────────────────────────────────────────────────
 string GROUP_GRADE = "═══ Grading Settings ═══"
@@ -351,7 +380,7 @@ i_risk_type         = input.string("%", "Risk Type", options=["%", "USD"], group
 i_risk_value        = input.float(1.0, "Risk per Trade", minval=0.01, step=0.25, group=GROUP_RISK,
                       tooltip="Percent of the account or USD amount, per Risk Type. Size is rounded down so the risk is never exceeded")
 i_target_mode       = input.string("Fixed R:R", "Take Profit", options=["Fixed R:R", "Setup Target"], group=GROUP_RISK,
-                      tooltip="Fixed R:R: TP at entry ± R:R × risk. Setup Target: TP at the setup's target (liquidity level, LRLR origin, Data High/Low); falls back to the fixed R:R when the setup has none")
+                      tooltip="Fixed R:R: TP at entry ± R:R × risk. Setup Target: TP at the setup's target (liquidity level, session or previous day high/low, LRLR origin, Data High/Low); falls back to the fixed R:R when the setup has none")
 i_rr                = input.float(2.0, "R:R (Fixed)", minval=0.1, step=0.5, group=GROUP_RISK,
                       tooltip="Reward-to-risk for the Fixed R:R take profit: 1 = 1:1, 2 = 1:2")
 i_show_size         = input.bool(true, "Show Lot Size & Risk", group=GROUP_RISK,
@@ -427,6 +456,15 @@ var array<float> g_data_pending = array.new<float>(2, na)
 float DATA_RANGE_ATR = 2.0   // Candle range (x ATR before the release) that marks a real release
 int DATA_MAX_TF_SECS = 900   // Data candles only on 15m and lower
 color DATA_COLOR     = #E040FB  // Data High/Low lines (purple)
+// Killzone highs/lows (latest of each killzone) and the previous day's high/low
+var array<float> g_sess_hl = array.new<float>(2, na)   // Running killzone high, low
+var array<int> g_sess_bars = array.new<int>(3, 0)       // High bar, low bar, killzone id (0 = none)
+var array<float> g_day_hl = array.new<float>(2, na)    // Running day high, low
+var array<int> g_day_bars = array.new<int>(2, 0)        // Day high bar, low bar
+var array<box> g_kz_boxes = array.new<box>()            // Killzone boxes of the current trading day
+var array<box> g_kz_cur = array.new<box>(1)             // Box of the running killzone
+int SESSION_MAX_TF_SECS = 3600  // Killzones on 1H and lower
+bool g_new_day = ta.change(time("D")) != 0
 
 // Liquidity memory rules (automatic, not user settings)
 // Live levels are remembered until swept or broken, regardless of age.
@@ -590,11 +628,25 @@ cleanup_ifvg_array() =>
 // ─────────────────────────────────────────────────────────────────────
 // Liquidity side: buy-side (highs) or sell-side (lows)
 // ─────────────────────────────────────────────────────────────────────
+// Data, session and previous day levels are named "... High" / "... Low"
 is_bsl(Liquidity liq) =>
-    liq.liq_type == "EQH" or liq.liq_type == "ITH" or liq.liq_type == "Data High"
+    liq.liq_type == "EQH" or liq.liq_type == "ITH" or str.endswith(liq.liq_type, " High")
 
 is_ssl(Liquidity liq) =>
-    liq.liq_type == "EQL" or liq.liq_type == "ITL" or liq.liq_type == "Data Low"
+    liq.liq_type == "EQL" or liq.liq_type == "ITL" or str.endswith(liq.liq_type, " Low")
+
+// Session (Asia / London / NY AM / NY PM) or previous day level
+is_session_liq(Liquidity liq) =>
+    str.startswith(liq.liq_type, "Asia") or str.startswith(liq.liq_type, "London") or str.startswith(liq.liq_type, "NY") or str.startswith(liq.liq_type, "Prev Day")
+
+// Display name ("Strong High" for a Strong ITH)
+liq_name(Liquidity liq) =>
+    liq.is_strong ? (liq.liq_type == "ITH" ? "Strong High" : "Strong Low") : liq.liq_type
+
+// Level kind for the trade tag: eq, strong, int, data, session, prevday
+liq_kind(Liquidity liq) =>
+    string t = liq.liq_type
+    t == "EQH" or t == "EQL" ? "eq" : t == "ITH" or t == "ITL" ? (liq.is_strong ? "strong" : "int") : str.startswith(t, "Data") ? "data" : str.startswith(t, "Prev Day") ? "prevday" : "session"
 
 // ─────────────────────────────────────────────────────────────────────
 // Delete a liquidity level's line and label
@@ -1896,7 +1948,7 @@ find_dol(bool is_bullish_ifvg, float current_price) =>
 
 // ─────────────────────────────────────────────────────────────────────
 // Check if a liquidity sweep CAUSED this setup's reversal (no bar-count setting)
-// Returns 0 = no sweep, 1 = wick sweep, 2 = closed through and reclaimed
+// Returns [0 = no sweep, 1 = wick sweep, 2 = closed through and reclaimed; the swept level]
 // RULE 1: The level was taken (wick-swept or broken by a close) inside the setup's
 //         own move — from FVG formation (window_start) up to the inversion candle.
 // RULE 2: The move's extreme (highest high for BSL / lowest low for SSL) is on the
@@ -1910,6 +1962,7 @@ find_dol(bool is_bullish_ifvg, float current_price) =>
 // ─────────────────────────────────────────────────────────────────────
 check_setup_sweep(bool looking_for_bsl, int window_start) =>
     int result = 0
+    Liquidity swept = na
     int span = int(math.min(bar_index - window_start, 499))
     if span >= 0
         // Extreme of the move across the window and its bar offset (oldest wins on ties)
@@ -1939,7 +1992,8 @@ check_setup_sweep(bool looking_for_bsl, int window_start) =>
                                     closed_after_extreme := true
                         if not closed_after_extreme and closes_beyond <= SWEEP_MAX_CLOSES_BEYOND
                             result := closes_beyond == 0 ? 1 : 2
-    result
+                            swept := liq
+    [result, swept]
 
 // ─────────────────────────────────────────────────────────────────────
 // Assess momentum through the IFVG (per D-08, strategy 6: "no chop through the IFVG")
@@ -2262,15 +2316,116 @@ session_name() =>
     result
 
 // ─────────────────────────────────────────────────────────────────────
-// Setup details as one text tag: "A|sw=1|dl=HTF|mo=2|si=2|tg=2|pd=discount|lr=0|ss=NY AM|bi=with"
-// sw: 0 none, 1 wick sweep, 2 reclaimed · dl: HTF / TF / none · mo, si, tg: grading scores
+// ICT killzones and previous day highs/lows as liquidity (fixed times)
+// RULE 1: Killzones in New York time (DST included, chart timezone irrelevant):
+//         Asia 20:00-00:00, London 02:00-05:00, NY AM 08:30-11:00, NY Lunch 12:00-13:00,
+//         NY PM 13:30-16:00. A candle belongs to the killzone its open time falls in. 1H and lower.
+// RULE 2: When a killzone ends, its high and low become "<Killzone> High/Low" levels,
+//         anchored at the candles that made them (NY Lunch: box only). A newer killzone
+//         of the same name replaces the older live levels; swept/broken ones age out.
+// RULE 3: On the first candle of a new trading day the previous day's high and low
+//         become "Prev Day High/Low" (intraday charts) and old killzone boxes are removed.
+// RULE 4: Levels are sweepable and targetable until swept or broken, like EQH/EQL.
+// ─────────────────────────────────────────────────────────────────────
+// Killzone of the current candle: 0 none, 1 Asia, 2 London, 3 NY AM, 4 NY Lunch, 5 NY PM
+kz_id() =>
+    int mins = hour(time, "America/New_York") * 60 + minute(time, "America/New_York")
+    mins >= 1200 ? 1 : (mins >= 120 and mins < 300) ? 2 : (mins >= 510 and mins < 660) ? 3 : (mins >= 720 and mins < 780) ? 4 : (mins >= 810 and mins < 960) ? 5 : 0
+
+kz_name(int id) =>
+    id == 1 ? "Asia" : id == 2 ? "London" : id == 3 ? "NY AM" : id == 4 ? "NY Lunch" : "NY PM"
+
+kz_on(int id) =>
+    id == 1 ? i_kz_asia_on : id == 2 ? i_kz_lon_on : id == 3 ? i_kz_nyam_on : id == 4 ? i_kz_lunch_on : i_kz_nypm_on
+
+kz_color(int id) =>
+    id == 1 ? i_kz_asia_col : id == 2 ? i_kz_lon_col : id == 3 ? i_kz_nyam_col : id == 4 ? i_kz_lunch_col : i_kz_nypm_col
+
+// Killzone id from a level type ("London High" → 2), 0 for other levels
+kz_of_level(string liq_type) =>
+    str.startswith(liq_type, "Asia") ? 1 : str.startswith(liq_type, "London") ? 2 : str.startswith(liq_type, "NY AM") ? 3 : str.startswith(liq_type, "NY PM") ? 5 : 0
+
+// Short line label: As H, Lo L, NY H, PM L, PDH, PDL
+kz_short_label(string liq_type) =>
+    string side = str.endswith(liq_type, "High") ? "H" : "L"
+    str.startswith(liq_type, "Prev Day") ? "PD" + side : str.startswith(liq_type, "Asia") ? "As " + side : str.startswith(liq_type, "London") ? "Lo " + side : str.startswith(liq_type, "NY AM") ? "NY " + side : "PM " + side
+
+// Replace the live level of this type (if any) with a new one
+replace_level(string liq_type, float lvl, int bar_at) =>
+    int n = array.size(g_liquidity_array)
+    if n > 0
+        for i = n - 1 to 0
+            Liquidity old = array.get(g_liquidity_array, i)
+            if old.liq_type == liq_type and old.is_valid and not old.is_swept
+                delete_liquidity_drawings(old)
+                array.remove(g_liquidity_array, i)
+    if not na(lvl)
+        array.push(g_liquidity_array, Liquidity.new(level = lvl, original_level = lvl, liq_type = liq_type, quality = "na", bar_idx = bar_at, last_touch_bar = bar_at, touch_count = 1, is_swept = false, swept_bar = 0, is_valid = true, line_id = na, label_id = na, is_decided = true))
+
+detect_session_levels() =>
+    if barstate.isconfirmed and timeframe.isintraday
+        // Previous day high/low; old killzone boxes go at the new trading day
+        if g_new_day
+            if not na(array.get(g_day_hl, 0))
+                replace_level("Prev Day High", array.get(g_day_hl, 0), array.get(g_day_bars, 0))
+                replace_level("Prev Day Low", array.get(g_day_hl, 1), array.get(g_day_bars, 1))
+            array.set(g_day_hl, 0, high)
+            array.set(g_day_hl, 1, low)
+            array.set(g_day_bars, 0, bar_index)
+            array.set(g_day_bars, 1, bar_index)
+            while array.size(g_kz_boxes) > 0
+                box.delete(array.pop(g_kz_boxes))
+        else
+            if na(array.get(g_day_hl, 0)) or high > array.get(g_day_hl, 0)
+                array.set(g_day_hl, 0, high)
+                array.set(g_day_bars, 0, bar_index)
+            if na(array.get(g_day_hl, 1)) or low < array.get(g_day_hl, 1)
+                array.set(g_day_hl, 1, low)
+                array.set(g_day_bars, 1, bar_index)
+        // Killzone high/low and box
+        if timeframe.in_seconds(timeframe.period) <= SESSION_MAX_TF_SECS
+            int sid = kz_id()
+            int prev_sid = array.get(g_sess_bars, 2)
+            if sid != prev_sid
+                if prev_sid > 0 and prev_sid != 4 and not na(array.get(g_sess_hl, 0))
+                    string nm = kz_name(prev_sid)
+                    replace_level(nm + " High", array.get(g_sess_hl, 0), array.get(g_sess_bars, 0))
+                    replace_level(nm + " Low", array.get(g_sess_hl, 1), array.get(g_sess_bars, 1))
+                array.set(g_sess_bars, 2, sid)
+                array.set(g_sess_hl, 0, sid > 0 ? high : na)
+                array.set(g_sess_hl, 1, sid > 0 ? low : na)
+                array.set(g_sess_bars, 0, bar_index)
+                array.set(g_sess_bars, 1, bar_index)
+                array.set(g_kz_cur, 0, na)
+                if sid > 0 and kz_on(sid)
+                    color kc = kz_color(sid)
+                    box nb = box.new(bar_index, high, bar_index + 1, low, border_color=(i_kz_border ? kc : na), bgcolor=color.new(kc, i_kz_transp), text=(i_kz_names ? kz_name(sid) : ""), text_color=color.new(kc, 20), text_size=size.small, text_halign=text.align_left, text_valign=text.align_top)
+                    array.set(g_kz_cur, 0, nb)
+                    array.push(g_kz_boxes, nb)
+            else if sid > 0
+                if high > array.get(g_sess_hl, 0)
+                    array.set(g_sess_hl, 0, high)
+                    array.set(g_sess_bars, 0, bar_index)
+                if low < array.get(g_sess_hl, 1)
+                    array.set(g_sess_hl, 1, low)
+                    array.set(g_sess_bars, 1, bar_index)
+                box cb = array.get(g_kz_cur, 0)
+                if not na(cb)
+                    box.set_right(cb, bar_index + 1)
+                    box.set_top(cb, array.get(g_sess_hl, 0))
+                    box.set_bottom(cb, array.get(g_sess_hl, 1))
+
+// ─────────────────────────────────────────────────────────────────────
+// Setup details as one text tag: "A|sw=1|sx=session|tt=eq|dl=HTF|mo=2|si=2|tg=2|pd=discount|lr=0|ss=NY AM|bi=with"
+// sw: 0 none, 1 wick sweep, 2 reclaimed · sx: swept level kind, tt: target level kind
+// (eq, strong, int, data, session, prevday, lrlr, none) · dl: HTF / TF / none · mo, si, tg: grading scores
 // pd: PD zone · lr: LRLR in path · ss: session · bi: HTF bias with / against / neutral
 // ─────────────────────────────────────────────────────────────────────
-trade_tag(string grade, int sweep_kind, string delivery_src, int mom, int sing, int tgt, string pd_zone, bool has_lrlr, bool is_bull) =>
+trade_tag(string grade, int sweep_kind, string sweep_src, string target_src, string delivery_src, int mom, int sing, int tgt, string pd_zone, bool has_lrlr, bool is_bull) =>
     string dl = delivery_src == "" ? "none" : str.startswith(delivery_src, "same TF") ? "TF" : "HTF"
     string bias = get_htf_bias()
     string bi = bias == "neutral" ? "neutral" : ((bias == "bullish") == is_bull ? "with" : "against")
-    grade + "|sw=" + str.tostring(sweep_kind) + "|dl=" + dl + "|mo=" + str.tostring(mom) + "|si=" + str.tostring(sing) + "|tg=" + str.tostring(tgt) + "|pd=" + pd_zone + "|lr=" + (has_lrlr ? "1" : "0") + "|ss=" + session_name() + "|bi=" + bi
+    grade + "|sw=" + str.tostring(sweep_kind) + "|sx=" + sweep_src + "|tt=" + target_src + "|dl=" + dl + "|mo=" + str.tostring(mom) + "|si=" + str.tostring(sing) + "|tg=" + str.tostring(tgt) + "|pd=" + pd_zone + "|lr=" + (has_lrlr ? "1" : "0") + "|ss=" + session_name() + "|bi=" + bi
 
 // ─────────────────────────────────────────────────────────────────────
 // Alert texts (queued, sent once per candle close at the end of the script)
@@ -2493,7 +2648,7 @@ check_inversions() =>
                             Liquidity dol = find_dol(ifvg_is_bullish, close)
 
                             // Check for a sweep inside this setup's move (FVG formation → inversion)
-                            int sweep_kind = check_setup_sweep(not ifvg_is_bullish, s_start)
+                            [sweep_kind, swept_liq] = check_setup_sweep(not ifvg_is_bullish, s_start)
                             bool has_sweep = sweep_kind > 0
 
                             // Delivery: price tapped an active FVG (HTF first, then chart TF) during
@@ -2535,6 +2690,7 @@ check_inversions() =>
                                 dol = dol,
                                 has_sweep = has_sweep,
                                 sweep_reclaimed = sweep_kind == 2,
+                                sweep_level = sweep_kind > 0 and not na(swept_liq) ? liq_name(swept_liq) : "",
                                 momentum = momentum_str,
                                 has_delivery = has_delivery,
                                 delivery_src = delivery_src,
@@ -2553,7 +2709,9 @@ check_inversions() =>
                                 formation_divider_id = na
                             )
 
-                            string setup_tag = trade_tag(grade, sweep_kind, delivery_src, momentum_score, singular_score, target_score, ifvg_pd_zone, not na(path_lrlr), ifvg_is_bullish)
+                            string sweep_src = sweep_kind > 0 and not na(swept_liq) ? liq_kind(swept_liq) : "none"
+                            string target_src = not na(dol) ? liq_kind(dol) : not na(path_lrlr) ? "lrlr" : "none"
+                            string setup_tag = trade_tag(grade, sweep_kind, sweep_src, target_src, delivery_src, momentum_score, singular_score, target_score, ifvg_pd_zone, not na(path_lrlr), ifvg_is_bullish)
                             new_ifvg.trade := create_trade(ifvg_is_bullish, close, sl_level, s_top, s_bottom, be_level, grade, setup_tag, dol, path_lrlr)
                             if not na(new_ifvg.trade) and grade_meets_minimum(grade, i_alert_min_grade)
                                 new_ifvg.trade.notify := true
@@ -3062,7 +3220,7 @@ render_ifvg_boxes() =>
                             int tt_tgt = ifvg.target_score
                             int tt_sg = ifvg.singularity_score
                             int tt_pd = score_pd_zone(ifvg.pd_zone, ifvg.is_bullish)
-                            string sweep_text = ifvg.sweep_reclaimed ? "Sweep (closed through, reclaimed)" : "Sweep"
+                            string sweep_text = "Sweep" + (ifvg.sweep_level != "" ? " of " + ifvg.sweep_level : "") + (ifvg.sweep_reclaimed ? " (closed through, reclaimed)" : "")
                             string band_text = ifvg.has_sweep and ifvg.has_delivery ? sweep_text + " + Delivery (" + ifvg.delivery_src + ") (A+ band)" : (ifvg.has_sweep ? sweep_text + " only (A band)" : (ifvg.has_delivery ? "Delivery (" + ifvg.delivery_src + ") only (A band)" : "No sweep or delivery (B band)"))
                             string mom_text = tt_mom == 2 ? "Strong, no chop" : (tt_mom == 0 ? "Weak / choppy" : "Some chop")
                             string tgt_text = (tt_tgt == 2 ? "Clear" : (tt_tgt == 1 ? "Closer than stop" : "None")) + (ifvg.has_lrlr ? " + LRLR" : "")
@@ -3257,7 +3415,7 @@ is_liq_displayable(Liquidity liq) =>
     bool is_eq = liq.liq_type == "EQH" or liq.liq_type == "EQL"
     bool is_internal = liq.liq_type == "ITH" or liq.liq_type == "ITL"
     bool is_data = liq.liq_type == "Data High" or liq.liq_type == "Data Low"
-    bool type_on = (is_eq and i_show_eqh_eql) or (is_internal and i_show_ith_itl) or (is_data and i_show_data)
+    bool type_on = (is_eq and i_show_eqh_eql) or (is_internal and i_show_ith_itl) or (is_data and i_show_data) or (is_session_liq(liq) and (str.startswith(liq.liq_type, "Prev Day") ? i_pdhl_on : (i_kz_lines and kz_on(kz_of_level(liq.liq_type)))))
     bool quality_ok = not (is_eq and i_show_perfect_only and liq.quality == "relative")
     type_on and quality_ok
 
@@ -3279,7 +3437,7 @@ render_liquidity_lines() =>
         array<float> below_data = array.new<float>()
         for i = 0 to liq_size - 1
             Liquidity lq = array.get(g_liquidity_array, i)
-            if is_liq_displayable(lq) and lq.is_valid and not lq.is_swept
+            if is_liq_displayable(lq) and lq.is_valid and not lq.is_swept and not is_session_liq(lq)
                 bool lq_above = lq.level >= close
                 bool lq_data = lq.liq_type == "Data High" or lq.liq_type == "Data Low"
                 float lq_dist = math.abs(lq.level - close)
@@ -3308,8 +3466,12 @@ render_liquidity_lines() =>
                 liq = array.get(g_liquidity_array, i)
                 bool is_mitigated = liq.is_swept or not liq.is_valid
                 bool is_data_lvl = liq.liq_type == "Data High" or liq.liq_type == "Data Low"
+                bool is_sess_lvl = is_session_liq(liq)
                 bool is_near = false
-                if not is_mitigated
+                // Session/previous day levels: only the latest of each, all drawn
+                if not is_mitigated and is_sess_lvl
+                    is_near := true
+                else if not is_mitigated
                     if liq.level >= close
                         float cut_a = is_data_lvl ? above_data_cut : liq.is_strong ? above_strong_cut : above_weak_cut
                         is_near := not na(cut_a) and liq.level - close <= cut_a
@@ -3361,6 +3523,20 @@ render_liquidity_lines() =>
                         line_color := i_ithl_color
                         line_style := line.style_dashed
 
+                else if is_sess_lvl
+                    bool is_pd_day = str.startswith(liq.liq_type, "Prev Day")
+                    color sess_col = is_pd_day ? i_pdhl_col : kz_color(kz_of_level(liq.liq_type))
+                    line_style := get_border_style(is_pd_day ? i_pdhl_style : i_kz_line_style)
+                    line_width := is_pd_day ? i_pdhl_width : i_kz_line_width
+                    if liq.is_swept
+                        line_color := color.new(sess_col, 70)  // Faded if swept
+                        line_style := line.style_dotted
+                    else if not liq.is_valid
+                        line_color := color.new(color.gray, 70)  // Gray if broken through
+                        line_style := line.style_dotted
+                    else
+                        line_color := sess_col
+
                 else if is_data_lvl
                     if liq.is_swept
                         line_color := color.new(DATA_COLOR, 70)  // Faded if swept
@@ -3390,7 +3566,7 @@ render_liquidity_lines() =>
 
                 // Draw label with enhanced info
                 if i_show_labels
-                    label_text = liq.is_strong ? (liq.liq_type == "ITH" ? "Strong High" : "Strong Low") : liq.liq_type
+                    label_text = liq.is_strong ? (liq.liq_type == "ITH" ? "Strong High" : "Strong Low") : is_sess_lvl ? kz_short_label(liq.liq_type) : liq.liq_type
 
                     if liq.liq_type == "EQH" or liq.liq_type == "EQL"
                         // Build label based on quality:
@@ -3716,6 +3892,7 @@ if i_show_indicator
     check_equal_lows()
     create_internal_levels()
     detect_data_candle()
+    detect_session_levels()
     cleanup_liquidity_array()
     update_lrlr()
 
@@ -4210,6 +4387,7 @@ if barstate.islast
         int dbg_disp = 0
         int dbg_drawn = 0
         int dbg_data_live = 0
+        int dbg_sess_live = 0
         for dq in g_liquidity_array
             bool dq_live = dq.is_valid and not dq.is_swept
             bool dq_internal = dq.liq_type == "ITH" or dq.liq_type == "ITL"
@@ -4217,6 +4395,8 @@ if barstate.islast
                 dbg_live += 1
             if dq_live and (dq.liq_type == "Data High" or dq.liq_type == "Data Low")
                 dbg_data_live += 1
+            if dq_live and is_session_liq(dq)
+                dbg_sess_live += 1
             if dq_live and dq_internal
                 dbg_ithl_live += 1
             if dq_live and dq.is_strong
@@ -4227,7 +4407,7 @@ if barstate.islast
                 dbg_disp += 1
             if not na(dq.line_id)
                 dbg_drawn += 1
-        string dbg_txt = "DEBUG" + "\nbars processed: " + str.tostring(bar_index) + "\nATR: " + str.tostring(atr_value, format.mintick) + "\nshow ITH/ITL: " + str.tostring(i_show_ith_itl) + "\ncandidates H/L: " + str.tostring(array.get(g_dbg_swing, 0)) + "/" + str.tostring(array.get(g_dbg_swing, 3)) + "\nconfirmed H/L: " + str.tostring(array.get(g_dbg_swing, 1)) + "/" + str.tostring(array.get(g_dbg_swing, 4)) + "\ncancelled H/L: " + str.tostring(array.get(g_dbg_swing, 2)) + "/" + str.tostring(array.get(g_dbg_swing, 5)) + "\npending H/L: " + str.tostring(array.size(g_pending_highs)) + "/" + str.tostring(array.size(g_pending_lows)) + "\nswings H/L: " + str.tostring(array.size(g_swing_highs)) + "/" + str.tostring(array.size(g_swing_lows)) + "\nliq total/live: " + str.tostring(array.size(g_liquidity_array)) + "/" + str.tostring(dbg_live) + "\nlive ITH/ITL: " + str.tostring(dbg_ithl_live) + "\nlive strong: " + str.tostring(dbg_strong) + "\nundecided: " + str.tostring(dbg_undecided) + "\ndisplayable: " + str.tostring(dbg_disp) + "\nwith line drawn: " + str.tostring(dbg_drawn) + "\nlive Data H/L: " + str.tostring(dbg_data_live)
+        string dbg_txt = "DEBUG" + "\nbars processed: " + str.tostring(bar_index) + "\nATR: " + str.tostring(atr_value, format.mintick) + "\nshow ITH/ITL: " + str.tostring(i_show_ith_itl) + "\ncandidates H/L: " + str.tostring(array.get(g_dbg_swing, 0)) + "/" + str.tostring(array.get(g_dbg_swing, 3)) + "\nconfirmed H/L: " + str.tostring(array.get(g_dbg_swing, 1)) + "/" + str.tostring(array.get(g_dbg_swing, 4)) + "\ncancelled H/L: " + str.tostring(array.get(g_dbg_swing, 2)) + "/" + str.tostring(array.get(g_dbg_swing, 5)) + "\npending H/L: " + str.tostring(array.size(g_pending_highs)) + "/" + str.tostring(array.size(g_pending_lows)) + "\nswings H/L: " + str.tostring(array.size(g_swing_highs)) + "/" + str.tostring(array.size(g_swing_lows)) + "\nliq total/live: " + str.tostring(array.size(g_liquidity_array)) + "/" + str.tostring(dbg_live) + "\nlive ITH/ITL: " + str.tostring(dbg_ithl_live) + "\nlive strong: " + str.tostring(dbg_strong) + "\nundecided: " + str.tostring(dbg_undecided) + "\ndisplayable: " + str.tostring(dbg_disp) + "\nwith line drawn: " + str.tostring(dbg_drawn) + "\nlive Data H/L: " + str.tostring(dbg_data_live) + "\nlive session/PD H/L: " + str.tostring(dbg_sess_live)
         int dbg_pd_live = 0
         for pq in g_pd_liquidity_array
             if pq.is_valid and not pq.is_swept
