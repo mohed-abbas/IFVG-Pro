@@ -20,10 +20,10 @@ string GROUP_STRAT = "═══ Strategy ═══"
 i_strat_from = input.time(timestamp("2015-01-01T00:00:00"), "Trade From", group=GROUP_STRAT,
      tooltip="Only open trades from this date. Use with Trade Until to test one period and confirm on another")
 i_strat_to   = input.time(timestamp("2099-12-31T00:00:00"), "Trade Until", group=GROUP_STRAT)
-i_flat_on    = input.bool(true, "Flat at Day End", group=GROUP_STRAT, inline="flat",
-     tooltip="Close any open trade at this New York time and open no new trade until the 18:00 reopen. Prop firms require it (Lucid: 16:45 ET)")
-i_flat_hour  = input.int(16, "", minval=0, maxval=23, group=GROUP_STRAT, inline="flat")
-i_flat_min   = input.int(45, ":", minval=0, maxval=59, group=GROUP_STRAT, inline="flat")
+i_flat_on    = input.bool(true, "Flat at Day End", group=GROUP_STRAT,
+     tooltip="Close any open trade at the Flat Time (New York) and open no new trade until the 18:00 reopen. Prop firms require it (Lucid: 16:45 ET)")
+i_flat_hhmm  = input.int(1645, "Flat Time (NY, HHMM)", minval=0, maxval=2359, group=GROUP_STRAT,
+     tooltip="24-hour New York time as HHMM, e.g. 1645 = 4:45 PM")
 i_show_breakdown = input.bool(true, "Show Breakdown Table", group=GROUP_STRAT,
      tooltip="Strategy trades split by HTF bias (with / against), delivery (HTF FVG / same-TF FVG / none), liquidity sweep and LRLR, read from each trade's setup tag. Net P&L after commission")
 string GROUP_PROP = "═══ Prop Firm & Returns ═══"
@@ -55,7 +55,7 @@ var Trade g_strat_trade = na
 bool strat_in_window = time >= i_strat_from and time <= i_strat_to
 // RULE 4: day-end flat window, from the flat time to the 18:00 New York reopen
 int strat_close_min = hour(time_close, "America/New_York") * 60 + minute(time_close, "America/New_York")
-bool strat_flat_window = i_flat_on and strat_close_min >= i_flat_hour * 60 + i_flat_min and strat_close_min < 18 * 60
+bool strat_flat_window = i_flat_on and strat_close_min >= int(i_flat_hhmm / 100) * 60 + i_flat_hhmm % 100 and strat_close_min < 18 * 60
 if i_show_indicator and barstate.isconfirmed
     // Manage the open trade
     if strategy.position_size != 0 and strat_flat_window
