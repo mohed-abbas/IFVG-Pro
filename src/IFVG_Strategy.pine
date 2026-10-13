@@ -33,7 +33,7 @@ strategy("IFVG Strategy", shorttitle="IFVG Strat", overlay=true,
          max_boxes_count=500,
          max_lines_count=500,
          max_labels_count=500,
-         initial_capital=10000,
+         initial_capital=50000,
          currency=currency.USD,
          pyramiding=0,
          process_orders_on_close=true,
@@ -4591,6 +4591,8 @@ if barstate.islast
 // RULE 2: Exit order: TP limit + hard stop (the SL line); the stop moves to entry once
 //         the BE level is reached.
 // RULE 3: Any candle closing beyond the IFVG box closes the trade at that close.
+// RULE 4: Flat by the day-end time (New York): an open trade is closed on the candle that
+//         closes at or after it, and no new trade opens until the 18:00 reopen (Lucid: 16:45).
 // NOTE: Futures size in whole contracts of the chart symbol. Run on the micro (MNQ1!)
 //       unless the risk covers a full contract; setups sized at 0 are skipped.
 // NOTE: Each entry's comment carries the setup tag (grade, sweep, delivery, scores,
@@ -4600,6 +4602,12 @@ string GROUP_STRAT = "═══ Strategy ═══"
 i_strat_from = input.time(timestamp("2015-01-01T00:00:00"), "Trade From", group=GROUP_STRAT,
      tooltip="Only open trades from this date. Use with Trade Until to test one period and confirm on another")
 i_strat_to   = input.time(timestamp("2099-12-31T00:00:00"), "Trade Until", group=GROUP_STRAT)
+i_flat_on    = input.bool(true, "Flat at Day End", group=GROUP_STRAT, inline="flat",
+     tooltip="Close any open trade at this New York time and open no new trade until the 18:00 reopen. Prop firms require it (Lucid: 16:45 ET)")
+i_flat_hour  = input.int(16, "", minval=0, maxval=23, group=GROUP_STRAT, inline="flat")
+i_flat_min   = input.int(45, ":", minval=0, maxval=59, group=GROUP_STRAT, inline="flat")
+i_show_breakdown = input.bool(true, "Show Breakdown Table", group=GROUP_STRAT,
+     tooltip="Strategy trades split by HTF bias (with / against), delivery (HTF FVG / same-TF FVG / none), liquidity sweep and LRLR, read from each trade's setup tag. Net P&L after commission")
 string GROUP_PROP = "═══ Prop Firm & Returns ═══"
 i_show_returns  = input.bool(true, "Show Monthly Returns Table", group=GROUP_PROP)
 i_prop_on       = input.bool(true, "Prop Firm Check", group=GROUP_PROP)
@@ -4627,9 +4635,14 @@ strategy_qty(float entry, float stop_px) =>
 
 var Trade g_strat_trade = na
 bool strat_in_window = time >= i_strat_from and time <= i_strat_to
+// RULE 4: day-end flat window, from the flat time to the 18:00 New York reopen
+int strat_close_min = hour(time_close, "America/New_York") * 60 + minute(time_close, "America/New_York")
+bool strat_flat_window = i_flat_on and strat_close_min >= i_flat_hour * 60 + i_flat_min and strat_close_min < 18 * 60
 if i_show_indicator and barstate.isconfirmed
     // Manage the open trade
-    if strategy.position_size != 0 and not na(g_strat_trade)
+    if strategy.position_size != 0 and strat_flat_window
+        strategy.close_all(comment="day end")
+    else if strategy.position_size != 0 and not na(g_strat_trade)
         Trade st = g_strat_trade
         if st.result == 2
             strategy.close("IFVG", comment="close beyond box")
@@ -4639,7 +4652,7 @@ if i_show_indicator and barstate.isconfirmed
         g_strat_trade := na
     // New entry on the setup formed this candle
     int strat_n = array.size(g_ifvg_array)
-    if strategy.position_size == 0 and strat_in_window and strat_n > 0
+    if strategy.position_size == 0 and strat_in_window and not strat_flat_window and strat_n > 0
         IFVG sf = array.get(g_ifvg_array, strat_n - 1)
         if sf.inversion_bar == bar_index and not na(sf.trade) and grade_meets_minimum(sf.grade, i_stats_min_grade)
             Trade nt = sf.trade
@@ -4694,6 +4707,32 @@ var float p_last_closed = na
 var float p_best_day = 0.0         // Best day's closed profit in the current evaluation
 bool strat_new_day = ta.change(time("D")) != 0
 
+// Breakdown rows: 0 all · 1-3 HTF bias with/against/neutral · 4-6 delivery HTF/TF/none
+// · 7-8 sweep yes/no · 9-10 LRLR yes/no. Per row: trades, wins, gross profit, gross loss.
+int BD_ROWS = 11
+var array<int> g_bd_n = array.new<int>(BD_ROWS, 0)
+var array<int> g_bd_w = array.new<int>(BD_ROWS, 0)
+var array<float> g_bd_gp = array.new<float>(BD_ROWS, 0.0)
+var array<float> g_bd_gl = array.new<float>(BD_ROWS, 0.0)
+
+// Value of `key` in a setup tag "A|sw=1|...|bi=with" ("" when missing)
+tag_value(string tag, string key) =>
+    string result = ""
+    int p = str.pos(tag, "|" + key + "=")
+    if not na(p)
+        string rest = str.substring(tag, p + str.length(key) + 2)
+        int e = str.pos(rest, "|")
+        result := na(e) ? rest : str.substring(rest, 0, e)
+    result
+
+bd_add(int row, float pnl) =>
+    array.set(g_bd_n, row, array.get(g_bd_n, row) + 1)
+    if pnl > 0
+        array.set(g_bd_w, row, array.get(g_bd_w, row) + 1)
+        array.set(g_bd_gp, row, array.get(g_bd_gp, row) + pnl)
+    else
+        array.set(g_bd_gl, row, array.get(g_bd_gl, row) - pnl)
+
 if i_show_indicator and barstate.isconfirmed
     // Closed trades → monthly P&L and streaks
     if strategy.closedtrades > g_closed_seen
@@ -4702,6 +4741,15 @@ if i_show_indicator and barstate.isconfirmed
             int xt = strategy.closedtrades.exit_time(ci)
             int mkey = year(xt, "America/New_York") * 100 + month(xt, "America/New_York")
             g_month_pnl.put(mkey, nz(g_month_pnl.get(mkey)) + pnl)
+            string ctag = strategy.closedtrades.entry_comment(ci)
+            string c_bi = tag_value(ctag, "bi")
+            string c_dl = tag_value(ctag, "dl")
+            string c_sw = tag_value(ctag, "sw")
+            bd_add(0, pnl)
+            bd_add(c_bi == "with" ? 1 : c_bi == "against" ? 2 : 3, pnl)
+            bd_add(c_dl == "HTF" ? 4 : c_dl == "TF" ? 5 : 6, pnl)
+            bd_add(c_sw == "1" or c_sw == "2" ? 7 : 8, pnl)
+            bd_add(tag_value(ctag, "lr") == "1" ? 9 : 10, pnl)
             if strategy.closedtrades.exit_comment(ci) != "BE"
                 if pnl < 0
                     g_loss_run += 1
@@ -4798,3 +4846,25 @@ if barstate.islast
             row += 1
             table.cell(g_ret_table, 0, row, res_txt, text_color=(p_fail == 0 ? i_bullish_color : color.white), text_size=size.tiny, text_halign=text.align_left)
             table.merge_cells(g_ret_table, 0, row, 13, row)
+
+// Breakdown table: strategy trades by HTF bias, delivery, sweep and LRLR (top center)
+var table g_bd_table = table.new(position.top_center, 6, BD_ROWS + 1, bgcolor=color.new(color.black, 80), border_width=1, border_color=color.gray)
+if barstate.islast
+    table.clear(g_bd_table, 0, 0, 5, BD_ROWS)
+    if i_show_breakdown
+        array<string> heads = array.from("Trades by", "Trades", "Win %", "PF", "Net", "Avg")
+        for hc = 0 to 5
+            table.cell(g_bd_table, hc, 0, array.get(heads, hc), text_color=color.gray, text_size=size.tiny)
+        array<string> names = array.from("All trades", "HTF bias: with", "HTF bias: against", "HTF bias: neutral", "Delivery: HTF FVG", "Delivery: same-TF FVG", "Delivery: none", "Sweep: yes", "Sweep: no", "LRLR in path: yes", "LRLR in path: no")
+        for r = 0 to BD_ROWS - 1
+            int n = array.get(g_bd_n, r)
+            float gp = array.get(g_bd_gp, r)
+            float gl = array.get(g_bd_gl, r)
+            float net = gp - gl
+            color nc = n == 0 ? color.gray : (net >= 0 ? i_bullish_color : i_bearish_color)
+            table.cell(g_bd_table, 0, r + 1, array.get(names, r), text_color=(r == 0 ? color.white : color.silver), text_size=size.tiny, text_halign=text.align_left)
+            table.cell(g_bd_table, 1, r + 1, str.tostring(n), text_color=color.white, text_size=size.tiny)
+            table.cell(g_bd_table, 2, r + 1, n > 0 ? str.tostring(array.get(g_bd_w, r) * 100.0 / n, "0") + "%" : "-", text_color=color.white, text_size=size.tiny)
+            table.cell(g_bd_table, 3, r + 1, gl > 0 ? str.tostring(gp / gl, "0.00") : (gp > 0 ? "∞" : "-"), text_color=color.white, text_size=size.tiny)
+            table.cell(g_bd_table, 4, r + 1, n > 0 ? fmt_k(net) : "-", text_color=nc, text_size=size.tiny)
+            table.cell(g_bd_table, 5, r + 1, n > 0 ? fmt_k(net / n) : "-", text_color=nc, text_size=size.tiny)
