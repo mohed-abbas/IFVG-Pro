@@ -950,7 +950,7 @@ int htf_bar_idx = int(htf_bar_idx_raw)
 int htf2_bar_idx = int(htf2_bar_idx_raw)
 
 // ─── HTF market structure (bias) ─────────────────────────────
-// ICT structure evaluated on HTF1 candles. 1 call, 2 tuple elements.
+// ICT structure evaluated on HTF1 candles. 1 call, 4 tuple elements.
 // Swings use the chart's automatic rule: 3-candle swing, confirmed by a close
 // SWING_CONFIRM_ATR x ATR away, cancelled if traded through before confirmation.
 // RULE 1: only a candle BODY close beyond a level is a break (wicks never count).
@@ -962,7 +962,8 @@ int htf2_bar_idx = int(htf2_bar_idx_raw)
 // RULE 5: BOS levels are external only: the leg high in an uptrend (low in a downtrend).
 //         Internal structure inside a pullback (lower highs / higher lows) is ignored.
 // Returns the bias of the last CLOSED HTF candle (1 bullish, -1 bearish, 0 none yet) and its
-// protected level. Read as [1] with lookahead_on: no intrabar repainting.
+// protected level, plus the last break (level, 1 = BOS / 2 = MSS).
+// Read as [1] with lookahead_on: no intrabar repainting.
 // NOTE: no lookback loops — every leg extreme is a running value updated once per HTF bar
 // (the loop version pushed the script past the 20 s limit, RE10110).
 
@@ -1004,6 +1005,9 @@ htf_structure_feed() =>
     var int prot_bar = na
     // Leg since the protected level: highest high since a protected low (bullish), mirrored
     var StructLeg prot_leg = na
+    // Last break: level closed through and kind (1 = BOS, 2 = MSS)
+    var float brk = na
+    var int brk_kind = 0
     float s_atr = ta.atr(i_fvg_atr_period)
     bool cand_h = high[1] > high[2] and high[1] >= high
     bool cand_l = low[1] < low[2] and low[1] <= low
@@ -1074,6 +1078,8 @@ htf_structure_feed() =>
         bool bear_mss = bias == 1 and close < prot
         bool bear_bos = bias != 1 and not na(sl) and close < sl
         if bull_mss or bull_bos
+            brk := bull_mss ? prot : sh
+            brk_kind := bull_mss ? 2 : 1
             // New protected low = start of the breaking leg. A BOS whose swing formed before the
             // current protected low keeps it (never reaches back past it).
             StructLeg src = bull_mss ? prot_leg : sh_leg
@@ -1089,6 +1095,8 @@ htf_structure_feed() =>
                 sh_bar := na
                 sh_leg := na
         else if bear_mss or bear_bos
+            brk := bear_mss ? prot : sl
+            brk_kind := bear_mss ? 2 : 1
             StructLeg src = bear_mss ? prot_leg : sl_leg
             if bear_bos and not bear_mss and bias == -1 and sl_bar < prot_bar
                 src := na
@@ -1101,9 +1109,9 @@ htf_structure_feed() =>
                 sl := na
                 sl_bar := na
                 sl_leg := na
-    [nz(bias[1]), prot[1]]
+    [nz(bias[1]), prot[1], brk[1], nz(brk_kind[1])]
 
-[htf_struct_bias, htf_struct_level] = request.security(syminfo.tickerid, i_htf_timeframe, htf_structure_feed(), lookahead = barmerge.lookahead_on)
+[htf_struct_bias, htf_struct_level, htf_struct_brk, htf_struct_brk_kind] = request.security(syminfo.tickerid, i_htf_timeframe, htf_structure_feed(), lookahead = barmerge.lookahead_on)
 
 // ─────────────────────────────────────────────────────────────────────
 // HTF bias from HTF1 market structure. Returns "bullish", "bearish", or "neutral"
@@ -3917,19 +3925,24 @@ render_dashboard(IFVG latest_ifvg) =>
 
         // Row 8: HTF Bias (Phase 3)
         string htf_bias_text = "-"
+        string htf_bias_tip = ""
         color htf_bias_color = color.gray
         if i_enable_htf
             string combined_bias = get_htf_bias()
             htf_bias_text := str.upper(combined_bias)
             float bias_lvl = get_htf_bias_level()
             if not na(bias_lvl)
-                htf_bias_text := htf_bias_text + " · MSS " + str.tostring(bias_lvl, format.mintick)
+                bool is_bear = combined_bias == "bearish"
+                string kind = htf_struct_brk_kind == 2 ? "MSS" : "BOS"
+                string brk_txt = na(htf_struct_brk) ? "" : " (" + kind + " " + (is_bear ? "below " : "above ") + str.tostring(htf_struct_brk, format.mintick) + ")"
+                htf_bias_text := htf_bias_text + brk_txt + " · flips " + (is_bear ? "above " : "below ") + str.tostring(bias_lvl, format.mintick)
+                htf_bias_tip := "Last break: " + kind + (is_bear ? " — HTF candle closed below " : " — HTF candle closed above ") + (na(htf_struct_brk) ? "-" : str.tostring(htf_struct_brk, format.mintick)) + ".\nProtected " + (is_bear ? "high " : "low ") + str.tostring(bias_lvl, format.mintick) + ": a close " + (is_bear ? "above" : "below") + " it is an MSS and flips the bias to " + (is_bear ? "BULLISH." : "BEARISH.")
             if combined_bias == "bullish"
                 htf_bias_color := color.green
             else if combined_bias == "bearish"
                 htf_bias_color := color.red
         table.cell(dashboard, 0, 8, "HTF Bias:", text_color=color.gray, text_size=size.small, text_halign=text.align_left)
-        table.cell(dashboard, 1, 8, htf_bias_text, text_color=htf_bias_color, text_size=size.small, text_halign=text.align_right)
+        table.cell(dashboard, 1, 8, htf_bias_text, text_color=htf_bias_color, text_size=size.small, text_halign=text.align_right, tooltip=htf_bias_tip)
 
         // Row 9: HTF TF Display
         string htf_tf_text = "-"

@@ -396,5 +396,5 @@ Two FVGs at completely different price levels got merged just because they were 
 - HTF1 only. The HTF2 fallback was dropped: it only mattered until HTF1's first break.
 - **Performance:** leg extremes are running values updated once per HTF bar (no lookback loops), 1 `request.security` call. The first version (2 calls + 300-bar loops) hit RE10110 on NQ1! H1.
 - Value of the last **closed** HTF candle (`[1]` + `lookahead_on`): no intrabar repainting, changes at most once per HTF candle.
-- Dashboard shows the bias and its flip level, e.g. `BULLISH · MSS 1.0850`.
+- Dashboard shows the bias, the last break and the protected level, e.g. `BEARISH (BOS below 30912.50) · flips above 31289.25`; hovering the cell explains both levels. (First wording "MSS <level>" read as if the MSS had happened at the protected level.)
 - Uses unchanged: setup filter ("Filter LTF by HTF Bias") and the `bi=` trade tag. Not part of the grade.
