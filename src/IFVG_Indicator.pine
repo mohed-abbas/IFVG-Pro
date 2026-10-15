@@ -2273,6 +2273,7 @@ find_delivery(bool ifvg_is_bullish, int window_start, int extreme_off) =>
 //          an LRLR on the way (confluence), or only an LRLR whose origin is that far
 // Score 1: a target exists but is closer than the stop ("reward sucks")
 // Score 0: no target
+// NOTE: `sl` is the IFVG box edge (the planned 1R), whatever the Stop Loss Type
 // ─────────────────────────────────────────────────────────────────────
 score_target(Liquidity dol_target, LRLR lrlr, float entry, float sl) =>
     int result = 0
@@ -2818,7 +2819,9 @@ check_inversions() =>
                             string ifvg_pd_zone = compute_pd_zone(s_mid)
                             int ifvg_pd_pct = compute_range_percent(s_mid)
                             LRLR path_lrlr = lrlr_in_path(ifvg_is_bullish, close)
-                            int target_score = score_target(dol, path_lrlr, close, sl_level)
+                            // Reward measured against the box edge (the planned 1R), so Stop Loss
+                            // Type sets only the stop and never changes the grade
+                            int target_score = score_target(dol, path_lrlr, close, fvg_edge)
                             string grade = calculate_grade(has_sweep, has_delivery, not str.startswith(delivery_src, "same TF"), momentum_score, target_score, singular_score, ifvg_pd_zone, ifvg_pd_pct, ifvg_is_bullish)
 
                             // Create IFVG

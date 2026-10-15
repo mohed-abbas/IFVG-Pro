@@ -6,15 +6,20 @@
 // RULE 1: Enter at the inversion close (process_orders_on_close) of a setup that meets
 //         "Min Grade (Stats & Strategy)", sized from entry to the IFVG box edge so a
 //         close beyond the box costs about the risk setting.
-// RULE 2: Exit order: TP limit + hard stop (the SL line); the stop moves to entry once
-//         the BE level is reached.
+// RULE 2: Exit order: TP limit + stop; the stop moves to entry once the BE level is reached.
+//         Stop Mode "Close beyond box": the stop order is the hard stop (the SL line) and
+//         RULE 3 does the rest. "Box edge (wick)": the stop order sits on the IFVG box edge,
+//         so a loss is about 1R.
 // RULE 3: Any candle closing beyond the IFVG box closes the trade at that close.
 // RULE 4: Flat by the day-end time (New York): an open trade is closed on the candle that
 //         closes at or after it, and no new trade opens until the 18:00 reopen (Lucid: 16:45).
+// RULE 5: Entry filters: HTF bias (read from the setup tag; neutral bias always passes)
+//         and the session the inversion candle belongs to (New York time).
 // NOTE: Futures size in whole contracts of the chart symbol. Run on the micro (MNQ1!)
 //       unless the risk covers a full contract; setups sized at 0 are skipped.
-// NOTE: Each entry's comment carries the setup tag (grade, sweep, delivery, scores,
-//       PD zone, LRLR, session, HTF bias) for the exported List of Trades.
+// NOTE: Each entry's comment is the grade ("By signals" then groups by grade); each exit's
+//       comment is "reason | setup tag" (grade, sweep, delivery, scores, PD zone, LRLR,
+//       session, HTF bias) for the exported List of Trades.
 // ══════════════════════════════════════════════════════════════════════
 string GROUP_STRAT = "═══ Strategy ═══"
 i_strat_from = input.time(timestamp("2015-01-01T00:00:00"), "Trade From", group=GROUP_STRAT,
@@ -24,6 +29,18 @@ i_flat_on    = input.bool(true, "Flat at Day End", group=GROUP_STRAT,
      tooltip="Close any open trade at the Flat Time (New York) and open no new trade until the 18:00 reopen. Prop firms require it (Lucid: 16:45 ET)")
 i_flat_hhmm  = input.int(1645, "Flat Time (NY, HHMM)", minval=0, maxval=2359, group=GROUP_STRAT,
      tooltip="24-hour New York time as HHMM, e.g. 1645 = 4:45 PM")
+i_stop_mode  = input.string("Close beyond box", "Stop Mode", options=["Close beyond box", "Box edge (wick)"], group=GROUP_STRAT,
+     tooltip="Close beyond box: exit when a candle closes beyond the IFVG box (a big candle can cost more than 1R). Box edge (wick): stop order on the box edge, so a loss is about 1R")
+i_bias_filter = input.string("All", "HTF Bias Filter", options=["All", "With bias", "Against bias"], group=GROUP_STRAT,
+     tooltip="Only trade setups with (or against) the HTF bias. Setups taken while the bias is neutral always pass")
+i_ss_asia    = input.bool(true, "Asia", inline="ss1", group=GROUP_STRAT,
+     tooltip="Sessions (New York time) the strategy may enter in: Asia 18:00-02:00, London 02:00-07:00, Pre-NY 07:00-09:30, NY AM 09:30-12:00, NY Lunch 12:00-13:30, NY PM 13:30-16:00, Close 16:00-18:00")
+i_ss_london  = input.bool(true, "London", inline="ss1", group=GROUP_STRAT)
+i_ss_preny   = input.bool(true, "Pre-NY", inline="ss1", group=GROUP_STRAT)
+i_ss_nyam    = input.bool(true, "NY AM", inline="ss2", group=GROUP_STRAT)
+i_ss_lunch   = input.bool(true, "NY Lunch", inline="ss2", group=GROUP_STRAT)
+i_ss_nypm    = input.bool(true, "NY PM", inline="ss2", group=GROUP_STRAT)
+i_ss_close   = input.bool(true, "Close", inline="ss2", group=GROUP_STRAT)
 i_show_breakdown = input.bool(true, "Show Breakdown Table", group=GROUP_STRAT,
      tooltip="Strategy trades split by HTF bias (with / against), delivery (HTF FVG / same-TF FVG / none), liquidity sweep and LRLR, read from each trade's setup tag. Net P&L after commission")
 string GROUP_PROP = "═══ Prop Firm & Returns ═══"
@@ -51,6 +68,34 @@ strategy_qty(float entry, float stop_px) =>
         qty := (syminfo.type == "crypto" or syminfo.type == "cfd") ? math.floor(raw * 1000.0) / 1000.0 : math.floor(raw)
     qty
 
+// Value of `key` in a setup tag "A|sw=1|...|bi=with" ("" when missing)
+tag_value(string tag, string key) =>
+    string result = ""
+    int p = str.pos(tag, "|" + key + "=")
+    if not na(p)
+        string rest = str.substring(tag, p + str.length(key) + 2)
+        int e = str.pos(rest, "|")
+        result := na(e) ? rest : str.substring(rest, 0, e)
+    result
+
+// RULE 5: entry filters on the setup's HTF bias and the current session
+strategy_filters_ok(Trade t) =>
+    string bi = tag_value(t.tag, "bi")
+    bool bias_ok = i_bias_filter == "All" or bi == "neutral" or (i_bias_filter == "With bias" and bi == "with") or (i_bias_filter == "Against bias" and bi == "against")
+    string ss = session_name()
+    bool sess_ok = (ss == "Asia" and i_ss_asia) or (ss == "London" and i_ss_london) or (ss == "Pre-NY" and i_ss_preny) or (ss == "NY AM" and i_ss_nyam) or (ss == "NY Lunch" and i_ss_lunch) or (ss == "NY PM" and i_ss_nypm) or (ss == "Close" and i_ss_close)
+    bias_ok and sess_ok
+
+// Exit comment "reason | setup tag": the entry carries only the grade so the Strategy
+// Tester's "By signals" panel groups by grade; the full tag stays in the export here
+string EXIT_SEP = " | "
+strategy_exit_comment(string reason, Trade t) =>
+    na(t) ? reason : reason + EXIT_SEP + t.tag
+
+// Stop order price: entry once at BE, else the box edge or the hard stop (na = none)
+strategy_stop(Trade t) =>
+    t.be_moved ? t.entry : (i_stop_mode == "Box edge (wick)" ? t.stop_px : t.sl)
+
 var Trade g_strat_trade = na
 bool strat_in_window = time >= i_strat_from and time <= i_strat_to
 // RULE 4: day-end flat window, from the flat time to the 18:00 New York reopen
@@ -59,25 +104,25 @@ bool strat_flat_window = i_flat_on and strat_close_min >= int(i_flat_hhmm / 100)
 if i_show_indicator and barstate.isconfirmed
     // Manage the open trade
     if strategy.position_size != 0 and strat_flat_window
-        strategy.close_all(comment="day end")
+        strategy.close_all(comment=strategy_exit_comment("day end", g_strat_trade))
     else if strategy.position_size != 0 and not na(g_strat_trade)
         Trade st = g_strat_trade
         if st.result == 2
-            strategy.close("IFVG", comment="close beyond box")
+            strategy.close("IFVG", comment=strategy_exit_comment("close beyond box", st))
         else
-            strategy.exit("Exit", "IFVG", stop=(st.be_moved ? st.entry : st.sl), limit=st.tp, comment_loss=(st.be_moved ? "BE" : "hard stop"), comment_profit="TP")
+            strategy.exit("Exit", "IFVG", stop=strategy_stop(st), limit=st.tp, comment_loss=strategy_exit_comment(st.be_moved ? "BE" : (i_stop_mode == "Box edge (wick)" ? "box edge" : "hard stop"), st), comment_profit=strategy_exit_comment("TP", st))
     if strategy.position_size == 0
         g_strat_trade := na
     // New entry on the setup formed this candle
     int strat_n = array.size(g_ifvg_array)
     if strategy.position_size == 0 and strat_in_window and not strat_flat_window and strat_n > 0
         IFVG sf = array.get(g_ifvg_array, strat_n - 1)
-        if sf.inversion_bar == bar_index and not na(sf.trade) and grade_meets_minimum(sf.grade, i_stats_min_grade)
+        if sf.inversion_bar == bar_index and not na(sf.trade) and grade_meets_minimum(sf.grade, i_stats_min_grade) and strategy_filters_ok(sf.trade)
             Trade nt = sf.trade
             float q = i_max_qty > 0 ? math.min(strategy_qty(nt.entry, nt.stop_px), i_max_qty) : strategy_qty(nt.entry, nt.stop_px)
             if q > 0
-                strategy.entry("IFVG", nt.is_bull ? strategy.long : strategy.short, qty=q, comment=nt.tag)
-                strategy.exit("Exit", "IFVG", stop=nt.sl, limit=nt.tp, comment_loss="hard stop", comment_profit="TP")
+                strategy.entry("IFVG", nt.is_bull ? strategy.long : strategy.short, qty=q, comment=nt.grade)
+                strategy.exit("Exit", "IFVG", stop=strategy_stop(nt), limit=nt.tp, comment_loss=strategy_exit_comment(i_stop_mode == "Box edge (wick)" ? "box edge" : "hard stop", nt), comment_profit=strategy_exit_comment("TP", nt))
                 g_strat_trade := nt
 
 // ══════════════════════════════════════════════════════════════════════
@@ -133,16 +178,6 @@ var array<int> g_bd_w = array.new<int>(BD_ROWS, 0)
 var array<float> g_bd_gp = array.new<float>(BD_ROWS, 0.0)
 var array<float> g_bd_gl = array.new<float>(BD_ROWS, 0.0)
 
-// Value of `key` in a setup tag "A|sw=1|...|bi=with" ("" when missing)
-tag_value(string tag, string key) =>
-    string result = ""
-    int p = str.pos(tag, "|" + key + "=")
-    if not na(p)
-        string rest = str.substring(tag, p + str.length(key) + 2)
-        int e = str.pos(rest, "|")
-        result := na(e) ? rest : str.substring(rest, 0, e)
-    result
-
 bd_add(int row, float pnl) =>
     array.set(g_bd_n, row, array.get(g_bd_n, row) + 1)
     if pnl > 0
@@ -159,7 +194,10 @@ if i_show_indicator and barstate.isconfirmed
             int xt = strategy.closedtrades.exit_time(ci)
             int mkey = year(xt, "America/New_York") * 100 + month(xt, "America/New_York")
             g_month_pnl.put(mkey, nz(g_month_pnl.get(mkey)) + pnl)
-            string ctag = strategy.closedtrades.entry_comment(ci)
+            string cexit = strategy.closedtrades.exit_comment(ci)
+            int csep = str.pos(cexit, EXIT_SEP)
+            string ctag = na(csep) ? "" : str.substring(cexit, csep + str.length(EXIT_SEP))
+            string creason = na(csep) ? cexit : str.substring(cexit, 0, csep)
             string c_bi = tag_value(ctag, "bi")
             string c_dl = tag_value(ctag, "dl")
             string c_sw = tag_value(ctag, "sw")
@@ -168,7 +206,7 @@ if i_show_indicator and barstate.isconfirmed
             bd_add(c_dl == "HTF" ? 4 : c_dl == "TF" ? 5 : 6, pnl)
             bd_add(c_sw == "1" or c_sw == "2" ? 7 : 8, pnl)
             bd_add(tag_value(ctag, "lr") == "1" ? 9 : 10, pnl)
-            if strategy.closedtrades.exit_comment(ci) != "BE"
+            if creason != "BE"
                 if pnl < 0
                     g_loss_run += 1
                     g_win_run := 0
