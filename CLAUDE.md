@@ -83,6 +83,15 @@ and the pitfalls already hit. Results go in `docs/BACKTEST-LOG.md`, exports in
 `backtesting/<series>/`. Keep both files up to date in the repo (not only in local memory)
 whenever settings, rules or findings change. Backtesting work runs outside the GSD workflow.
 
+**Next step (as of 2026-10-15):** add a strategy option **"Skip internal-high/low targets"**
+in `tools/strategy_orders.pine` (entry filter reading `tt=` from the setup tag: skip when
+the nearest target is an internal ITH/ITL, `tt=int`; default off so old results reproduce),
+rebuild with `python3 tools/build_strategy.py`, then test it with the S2-3b baseline on
+**both** windows on 5m: in-sample Sep 21 – Oct 15 (compare with S2-3b, PF 1.11, +$994) and
+out-of-sample Jul 3 – Aug 3 via Bar Replay (compare with S2-4, PF 1.24, +$2,210). Keep it
+only if it improves both. After that: run the baseline on 3m and 1m. Update this line when
+the step is done.
+
 ## Pine Script Conventions
 
 - All detection runs on confirmed bars only (`barstate.isconfirmed`)
