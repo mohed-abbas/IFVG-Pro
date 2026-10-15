@@ -29,10 +29,7 @@ build/
 .env.local
 .env.*.local
 
-# Claude specific
-claudedocs/
-CLAUDE.md
-.claude/
+# AI docs (CLAUDE.md, .claude/, claudedocs/, .planning/) are tracked on purpose
 
 
 # Browser automation artifacts

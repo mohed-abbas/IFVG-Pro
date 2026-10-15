@@ -75,6 +75,14 @@ Setups are graded A+ to C based on:
 - `strategy.md` - Trading strategy rules and entry criteria
 - `briefing/IFVG_Rating_System.pdf` - Reference grading system
 
+## Backtesting (read first)
+
+Before any backtest work (running, analysing or changing the strategy for a test), read
+`docs/BACKTEST-CONTEXT.md`: the trader's settings and risk, the testing rules, the workflow
+and the pitfalls already hit. Results go in `docs/BACKTEST-LOG.md`, exports in
+`backtesting/<series>/`. Keep both files up to date in the repo (not only in local memory)
+whenever settings, rules or findings change. Backtesting work runs outside the GSD workflow.
+
 ## Pine Script Conventions
 
 - All detection runs on confirmed bars only (`barstate.isconfirmed`)
