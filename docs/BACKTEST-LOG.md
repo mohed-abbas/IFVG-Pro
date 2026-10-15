@@ -3,6 +3,7 @@
 Strategy backtests of `src/IFVG_Strategy.pine` (generated from the indicator by
 `tools/build_strategy.py`). Each run changes **one** setting from the run it is compared to.
 Raw TradingView exports (List of Trades + all settings) live in `backtesting/<series>/`.
+The trader's settings, testing rules and workflow: [`BACKTEST-CONTEXT.md`](BACKTEST-CONTEXT.md).
 
 ## Common setup
 
